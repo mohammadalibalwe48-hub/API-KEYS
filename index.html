@@ -1,175 +1,753 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="system">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="description" content="Private, encrypted manager for your AI provider API keys." />
-  <title>KeyVault · AI API Key Manager</title>
-  <link rel="icon" href="data:," />
+  <meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#14161c" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="A private, encrypted manager for AI provider API keys." />
+  <title>Keyvault — AI API key manager</title>
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b6cff' stroke-width='1.8'%3E%3Crect x='3' y='3' width='18' height='18' rx='5.5'/%3E%3Ccircle cx='12' cy='10.6' r='2.3'/%3E%3Cpath d='M12 12.9v3.5' stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./styles.css" />
+  <script>
+    /* Applied before first paint so the theme never flashes. */
+    (function () {
+      try {
+        var saved = localStorage.getItem('keyvault-theme');
+        if (saved === 'light' || saved === 'dark' || saved === 'system') {
+          document.documentElement.setAttribute('data-theme', saved);
+        }
+      } catch (error) { /* storage unavailable — system theme applies */ }
+    })();
+  </script>
 </head>
+
 <body>
-  <!-- ============================= AUTH SCREEN ============================= -->
-  <main id="auth-view" class="auth-view" hidden>
-    <section class="auth-card" aria-labelledby="auth-title">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">KV</span>
-        <div>
-          <h1 id="auth-title" class="brand-name">KeyVault</h1>
-          <p class="brand-sub">Encrypted AI API key manager</p>
+  <!-- ===================================================================
+       Icon sprite. Each symbol carries its own stroke attributes so the
+       geometry survives regardless of cascade context. Small dots opt into
+       fill. No raster assets, no emoji, no icon font.
+       =================================================================== -->
+  <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+      stroke-linejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="5.5" />
+      <circle cx="12" cy="10.5" r="2.3" />
+      <path d="M12 12.8v3.6" />
+    </symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M4.4 17.6a8.6 8.6 0 1 1 15.2 0" />
+      <path d="M12 17.6l4.3-5.7" />
+      <circle cx="12" cy="17.6" r="1.2" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <circle cx="7.6" cy="15.6" r="3.5" />
+      <path d="M10.1 13.1L20 3.2" />
+      <path d="M16.4 4.7l3 3" />
+      <path d="M13.7 7.4l3 3" />
+    </symbol>
+    <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <circle cx="12" cy="8.2" r="3.5" />
+      <path d="M4.6 20c0-3.6 3.3-6.1 7.4-6.1s7.4 2.5 7.4 6.1" />
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="6.25" />
+      <path d="M15.6 15.6L20.5 20.5" />
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M12 5.5v13M5.5 12h13" />
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+    </symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.5 9.75l5.5 5.5 5.5-5.5" />
+    </symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M12 5.5c4.6 0 8.1 3.9 9.2 6.5-1.1 2.6-4.6 6.5-9.2 6.5S3.9 14.6 2.8 12C3.9 9.4 7.4 5.5 12 5.5z" />
+      <circle cx="12" cy="12" r="2.75" />
+    </symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5.2 6.9C3.6 8.2 2.9 10.1 2.8 12c1.1 2.6 4.6 6.5 9.2 6.5 1.3 0 2.5-.3 3.6-.8" />
+      <path d="M9.5 9.3a2.75 2.75 0 0 0 5.2 5.2" />
+      <path d="M10.4 5.7A10 10 0 0 1 12 5.5c4.6 0 8.1 3.9 9.2 6.5-.5 1.2-1.5 2.8-3 4.2" />
+      <path d="M4.6 4.6l14.8 14.8" />
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <rect x="9" y="9" width="11" height="11" rx="2.5" />
+      <path d="M5 15h-.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" />
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M5 12.5l4.5 4.5L19 6.5" />
+    </symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.5 20H21" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7.5 18.5l-4 1 1-4L16.5 3.5z" />
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M3.5 6.5h17" />
+      <path d="M8.5 6.5V5A1.5 1.5 0 0 1 10 3.5h4A1.5 1.5 0 0 1 15.5 5v1.5" />
+      <path d="M18.6 6.5l-.85 12a2 2 0 0 1-2 1.9H8.25a2 2 0 0 1-2-1.9L5.4 6.5" />
+      <path d="M10.2 10.8v5.4M13.8 10.8v5.4" />
+    </symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M3.5 12.2h3.8l2.4-6.6 4.2 13 2.4-6.4h4.2" />
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.2l7.3 2.9v5.7c0 4.1-2.9 7.4-7.3 8.8-4.4-1.4-7.3-4.7-7.3-8.8V6.1L12 3.2z" />
+    </symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.2l7.3 2.9v5.7c0 4.1-2.9 7.4-7.3 8.8-4.4-1.4-7.3-4.7-7.3-8.8V6.1L12 3.2z" />
+      <path d="M8.9 11.9l2.2 2.2 4.1-4.5" />
+    </symbol>
+    <symbol id="i-shield-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.2l7.3 2.9v5.7c0 4.1-2.9 7.4-7.3 8.8-4.4-1.4-7.3-4.7-7.3-8.8V6.1L12 3.2z" />
+      <path d="M12 8.5v3.7" />
+      <circle cx="12" cy="15" r=".95" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <rect x="4.5" y="10" width="15" height="10.5" rx="2.5" />
+      <path d="M8 10V7.6a4 4 0 0 1 8 0V10" />
+      <circle cx="12" cy="15" r="1.1" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3.2" y="4.5" width="17.6" height="12" rx="2.2" />
+      <path d="M9 20h6M12 16.5V20" />
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3.9" />
+      <path
+        d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.7 5.7l1.5 1.5M16.8 16.8l1.5 1.5M18.3 5.7l-1.5 1.5M7.2 16.8l-1.5 1.5" />
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M20 14.3A8.5 8.5 0 0 1 9.7 4a8.5 8.5 0 1 0 10.3 10.3z" />
+    </symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.5 4H6.5A2.5 2.5 0 0 0 4 6.5v11A2.5 2.5 0 0 0 6.5 20h3" />
+      <path d="M15.5 8.25L19.25 12l-3.75 3.75" />
+      <path d="M19 12H9.5" />
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <path d="M12 4.6l8.4 14.6H3.6L12 4.6z" />
+      <path d="M12 10.1v3.6" />
+      <circle cx="12" cy="16.5" r=".95" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M8.3 12.2l2.5 2.5 4.9-5.2" />
+    </symbol>
+    <symbol id="i-x-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+      stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M9.4 9.4l5.2 5.2M14.6 9.4l-5.2 5.2" />
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M12 11.2v5.3" />
+      <circle cx="12" cy="7.9" r=".95" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M12 7.6V12l3.2 1.9" />
+    </symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 12h14" />
+      <path d="M13 6.5l5.5 5.5-5.5 5.5" />
+    </symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <!-- ===================================================================
+       AUTH
+       =================================================================== -->
+  <main id="auth" class="auth" hidden>
+    <section class="auth__brand" aria-hidden="true">
+      <div class="auth__brand-inner">
+        <span class="auth__mark">
+          <svg class="icon icon--28">
+            <use href="#i-logo" />
+          </svg>
+        </span>
+        <p class="auth__eyebrow">Keyvault</p>
+        <h2 class="auth__headline">Your provider keys, held to a higher standard.</h2>
+        <p class="auth__lede">
+          One encrypted home for every AI API key you hold — verified against the
+          provider it belongs to, and isolated to your account alone.
+        </p>
+        <ul class="assurance">
+          <li class="assurance__item">
+            <span class="assurance__icon"><svg class="icon">
+                <use href="#i-shield-check" />
+              </svg></span>
+            <span class="assurance__text">
+              <strong>Encrypted at rest</strong>
+              <span>AES-256. The encryption key lives in the database, never in your browser.</span>
+            </span>
+          </li>
+          <li class="assurance__item">
+            <span class="assurance__icon"><svg class="icon">
+                <use href="#i-lock" />
+              </svg></span>
+            <span class="assurance__text">
+              <strong>Isolated by policy</strong>
+              <span>Row-level security means an account can only ever read its own keys.</span>
+            </span>
+          </li>
+          <li class="assurance__item">
+            <span class="assurance__icon"><svg class="icon">
+                <use href="#i-monitor" />
+              </svg></span>
+            <span class="assurance__text">
+              <strong>Every device</strong>
+              <span>Phone, tablet and desktop stay in step through live synchronisation.</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="auth__panel">
+      <div class="auth__card">
+        <header class="auth__card-head">
+          <span class="auth__mark auth__mark--sm">
+            <svg class="icon">
+              <use href="#i-logo" />
+            </svg>
+          </span>
+          <div>
+            <h1 class="auth__title">Keyvault</h1>
+            <p class="auth__sub">AI API key manager</p>
+          </div>
+        </header>
+
+        <div class="segcontrol" role="tablist" aria-label="Authentication">
+          <button type="button" id="tab-login" class="segcontrol__btn is-active" role="tab" aria-selected="true"
+            aria-controls="panel-login">
+            <span class="segcontrol__label">Log in</span>
+          </button>
+          <button type="button" id="tab-signup" class="segcontrol__btn" role="tab" aria-selected="false"
+            aria-controls="panel-signup">
+            <span class="segcontrol__label">Create account</span>
+          </button>
         </div>
+
+        <form id="panel-login" class="form" role="tabpanel" aria-labelledby="tab-login" novalidate>
+          <div class="field">
+            <label class="field__label" for="login-email">Email</label>
+            <input class="input" id="login-email" name="email" type="email" autocomplete="email" inputmode="email"
+              spellcheck="false" placeholder="you@company.com" required />
+          </div>
+          <div class="field">
+            <label class="field__label" for="login-password">Password</label>
+            <input class="input" id="login-password" name="password" type="password" autocomplete="current-password"
+              placeholder="Enter your password" required />
+          </div>
+          <p class="form__error" id="login-error" role="alert" hidden></p>
+          <button class="btn btn--primary btn--block" type="submit">
+            <span class="btn__label">Log in</span>
+          </button>
+        </form>
+
+        <form id="panel-signup" class="form" role="tabpanel" aria-labelledby="tab-signup" novalidate hidden>
+          <div class="field">
+            <label class="field__label" for="signup-email">Email</label>
+            <input class="input" id="signup-email" name="email" type="email" autocomplete="email" inputmode="email"
+              spellcheck="false" placeholder="you@company.com" required />
+          </div>
+          <div class="field">
+            <label class="field__label" for="signup-password">Password</label>
+            <input class="input" id="signup-password" name="password" type="password" autocomplete="new-password"
+              minlength="6" placeholder="At least 6 characters" required />
+            <p class="field__hint">Use 12 characters or more for a key store.</p>
+          </div>
+          <p class="form__error" id="signup-error" role="alert" hidden></p>
+          <button class="btn btn--primary btn--block" type="submit">
+            <span class="btn__label">Create account</span>
+          </button>
+        </form>
+
+        <p class="auth__foot">
+          Every key is encrypted before it reaches the database, and no key is ever
+          written to a URL, a log, or this page&rsquo;s markup.
+        </p>
       </div>
-
-      <div class="tabs" role="tablist" aria-label="Authentication mode">
-        <button id="tab-login" class="tab is-active" role="tab" aria-selected="true"
-                aria-controls="login-form" type="button">Log in</button>
-        <button id="tab-signup" class="tab" role="tab" aria-selected="false"
-                aria-controls="signup-form" type="button">Sign up</button>
-      </div>
-
-      <form id="login-form" class="form" role="tabpanel" aria-labelledby="tab-login" novalidate>
-        <label class="field">
-          <span class="field-label">Email</span>
-          <input id="login-email" type="email" name="email" autocomplete="email"
-                 required placeholder="you@example.com" />
-        </label>
-        <label class="field">
-          <span class="field-label">Password</span>
-          <input id="login-password" type="password" name="password" autocomplete="current-password"
-                 required placeholder="••••••••" />
-        </label>
-        <button class="btn btn-primary btn-block" type="submit">Log in</button>
-        <p class="hint">Your keys sync automatically across phone, iPad, and desktop.</p>
-      </form>
-
-      <form id="signup-form" class="form" role="tabpanel" aria-labelledby="tab-signup" novalidate hidden>
-        <label class="field">
-          <span class="field-label">Email</span>
-          <input id="signup-email" type="email" name="email" autocomplete="email"
-                 required placeholder="you@example.com" />
-        </label>
-        <label class="field">
-          <span class="field-label">Password</span>
-          <input id="signup-password" type="password" name="password" autocomplete="new-password"
-                 required minlength="6" placeholder="At least 6 characters" />
-        </label>
-        <button class="btn btn-primary btn-block" type="submit">Create account</button>
-        <p class="hint">Each account can only ever read its own keys — enforced in the database.</p>
-      </form>
     </section>
   </main>
 
-  <!-- ============================== APP SCREEN ============================= -->
-  <div id="app-view" class="app-view" hidden>
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand brand--compact">
-          <span class="brand-mark" aria-hidden="true">KV</span>
-          <span class="brand-name">KeyVault</span>
-        </div>
-        <div class="topbar-right">
-          <span id="sync-status" class="sync-status" title="Realtime sync status">
-            <span class="dot" aria-hidden="true"></span><span id="sync-label">Live</span>
+  <!-- ===================================================================
+       APPLICATION SHELL
+       =================================================================== -->
+  <div id="app" class="shell" hidden>
+    <aside class="rail">
+      <div class="rail__head">
+        <span class="brand">
+          <span class="brand__mark"><svg class="icon">
+              <use href="#i-logo" />
+            </svg></span>
+          <span class="brand__name">Keyvault</span>
+        </span>
+      </div>
+
+      <nav class="rail__nav" aria-label="Primary">
+        <p class="rail__nav-label">Workspace</p>
+        <a class="navlink" href="#overview" data-view-link="overview">
+          <span class="navlink__icon"><svg class="icon">
+              <use href="#i-gauge" />
+            </svg></span>
+          <span class="navlink__text">Overview</span>
+        </a>
+        <a class="navlink" href="#keys" data-view-link="keys">
+          <span class="navlink__icon"><svg class="icon">
+              <use href="#i-key" />
+            </svg></span>
+          <span class="navlink__text">API keys</span>
+          <span class="navlink__meta" id="nav-key-count"></span>
+        </a>
+        <a class="navlink" href="#account" data-view-link="account">
+          <span class="navlink__icon"><svg class="icon">
+              <use href="#i-user" />
+            </svg></span>
+          <span class="navlink__text">Account</span>
+        </a>
+      </nav>
+
+      <div class="rail__foot">
+        <div class="identity">
+          <span class="avatar" id="rail-avatar" aria-hidden="true"></span>
+          <span class="identity__text">
+            <span class="identity__email" id="rail-email">&nbsp;</span>
+            <span class="identity__note">Signed in</span>
           </span>
-          <span id="user-email" class="user-email"></span>
-          <button id="logout-btn" class="btn btn-ghost" type="button">Log out</button>
         </div>
-      </div>
-    </header>
-
-    <main class="container">
-      <section class="toolbar" aria-label="Filters">
-        <div class="search-wrap">
-          <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true">
-            <path d="M9 3a6 6 0 104.472 10.003l3.262 3.262a1 1 0 001.415-1.415l-3.262-3.262A6 6 0 009 3zm0 2a4 4 0 110 8 4 4 0 010-8z"/>
+        <button class="btn btn--ghost btn--icon" type="button" data-action="logout">
+          <svg class="icon">
+            <use href="#i-logout" />
           </svg>
-          <input id="search" type="search" class="search-input" placeholder="Search provider, label, description…"
-                 aria-label="Search keys" autocomplete="off" />
-        </div>
-        <button id="add-btn" class="btn btn-primary" type="button">
-          <svg viewBox="0 0 20 20" aria-hidden="true" class="icon">
-            <path d="M10 4a1 1 0 011 1v4h4a1 1 0 110 2h-4v4a1 1 0 11-2 0v-4H5a1 1 0 110-2h4V5a1 1 0 011-1z"/>
-          </svg>
-          Add key
+          <span class="sr-only">Log out</span>
         </button>
-      </section>
-
-      <div id="provider-chips" class="chips" role="group" aria-label="Filter by provider"></div>
-
-      <div id="list-status" class="list-status" role="status" aria-live="polite"></div>
-
-      <section id="key-grid" class="grid" aria-label="API keys"></section>
-
-      <div id="empty-state" class="empty" hidden>
-        <h2>No keys yet</h2>
-        <p>Add your first AgentRouter, TokenHarbor, or SeekAI key. It is encrypted before it touches the disk.</p>
-        <button id="empty-add-btn" class="btn btn-primary" type="button">Add key</button>
       </div>
-    </main>
+    </aside>
+
+    <div class="shell__body">
+      <header class="appbar">
+        <span class="brand brand--compact">
+          <span class="brand__mark"><svg class="icon">
+              <use href="#i-logo" />
+            </svg></span>
+        </span>
+        <div class="appbar__titles">
+          <h1 class="appbar__title" id="view-title">Overview</h1>
+          <p class="appbar__sub" id="view-subtitle">A summary of every key you hold.</p>
+        </div>
+        <div class="appbar__actions">
+          <div class="segcontrol segcontrol--icons appbar__theme" role="group" aria-label="Colour theme">
+            <button type="button" class="segcontrol__btn" data-theme-option="system" title="Match system">
+              <svg class="icon">
+                <use href="#i-monitor" />
+              </svg>
+              <span class="sr-only">Match system theme</span>
+            </button>
+            <button type="button" class="segcontrol__btn" data-theme-option="light" title="Light">
+              <svg class="icon">
+                <use href="#i-sun" />
+              </svg>
+              <span class="sr-only">Use light theme</span>
+            </button>
+            <button type="button" class="segcontrol__btn" data-theme-option="dark" title="Dark">
+              <svg class="icon">
+                <use href="#i-moon" />
+              </svg>
+              <span class="sr-only">Use dark theme</span>
+            </button>
+          </div>
+          <span class="sync" id="sync" data-state="connecting" title="Realtime sync status">
+            <span class="sync__dot" aria-hidden="true"></span>
+            <span class="sync__label" id="sync-label">Connecting</span>
+          </span>
+        </div>
+      </header>
+
+      <main class="content" id="main" tabindex="-1">
+        <!-- ── Overview ─────────────────────────────────────────────── -->
+        <section class="view" id="view-overview" aria-labelledby="view-title" hidden>
+          <div class="stats" id="stats"></div>
+
+          <div class="panels">
+            <section class="panel" aria-labelledby="panel-providers">
+              <header class="panel__head">
+                <h2 class="panel__title" id="panel-providers">Coverage by provider</h2>
+                <p class="panel__sub">How your keys are distributed.</p>
+              </header>
+              <div class="panel__body" id="provider-breakdown"></div>
+            </section>
+
+            <section class="panel" aria-labelledby="panel-posture">
+              <header class="panel__head">
+                <h2 class="panel__title" id="panel-posture">Security posture</h2>
+                <p class="panel__sub">Controls enforced on every request.</p>
+              </header>
+              <div class="panel__body">
+                <ul class="posture">
+                  <li class="posture__item">
+                    <svg class="icon">
+                      <use href="#i-lock" />
+                    </svg>
+                    <span><strong>AES-256 at rest.</strong> Keys are encrypted before insert, using a passphrase held
+                      only inside the database.</span>
+                  </li>
+                  <li class="posture__item">
+                    <svg class="icon">
+                      <use href="#i-shield-check" />
+                    </svg>
+                    <span><strong>Row-level security.</strong> Reads and writes are scoped to your account by policy,
+                      not by the client.</span>
+                  </li>
+                  <li class="posture__item">
+                    <svg class="icon">
+                      <use href="#i-eye-off" />
+                    </svg>
+                    <span><strong>No key exposure.</strong> Plaintext appears on request for 30 seconds, never in a URL,
+                      a log, or storage.</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="panel-activity">
+            <header class="panel__head panel__head--row">
+              <div>
+                <h2 class="panel__title" id="panel-activity">Recent validation</h2>
+                <p class="panel__sub">The latest results returned by each provider.</p>
+              </div>
+              <a class="btn btn--ghost btn--sm" href="#keys" data-view-link="keys">
+                <span class="btn__label">All keys</span>
+                <svg class="icon">
+                  <use href="#i-arrow-right" />
+                </svg>
+              </a>
+            </header>
+            <div class="panel__body" id="activity"></div>
+          </section>
+        </section>
+
+        <!-- ── API keys ─────────────────────────────────────────────── -->
+        <section class="view" id="view-keys" aria-labelledby="view-title" hidden>
+          <div class="toolbar">
+            <div class="field field--search">
+              <label class="sr-only" for="search">Search keys</label>
+              <span class="field__icon"><svg class="icon">
+                  <use href="#i-search" />
+                </svg></span>
+              <input class="input input--search" id="search" type="search" autocomplete="off"
+                placeholder="Search by name, provider, description or last four" />
+              <kbd class="kbd" id="search-kbd">Ctrl K</kbd>
+              <button class="field__clear btn btn--ghost btn--icon" type="button" id="search-clear" hidden>
+                <svg class="icon">
+                  <use href="#i-close" />
+                </svg>
+                <span class="sr-only">Clear search</span>
+              </button>
+            </div>
+            <div class="toolbar__right">
+              <div class="field field--select">
+                <label class="sr-only" for="sort">Sort keys</label>
+                <select class="input select" id="sort">
+                  <option value="updated">Recently updated</option>
+                  <option value="created">Recently added</option>
+                  <option value="provider">Provider A–Z</option>
+                  <option value="name">Name A–Z</option>
+                </select>
+                <span class="field__icon field__icon--end"><svg class="icon">
+                    <use href="#i-chevron-down" />
+                  </svg></span>
+              </div>
+              <button class="btn btn--primary" type="button" data-action="add">
+                <svg class="icon">
+                  <use href="#i-plus" />
+                </svg>
+                <span class="btn__label">Add key</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="filters" id="provider-filters" role="group" aria-label="Filter by provider"></div>
+
+          <p class="resultline" id="result-line" role="status" aria-live="polite"></p>
+
+          <div id="keys-host"></div>
+
+          <div class="empty" id="keys-empty" hidden>
+            <span class="empty__icon"><svg class="icon icon--24">
+                <use href="#i-key" />
+              </svg></span>
+            <h2 class="empty__title">No keys yet</h2>
+            <p class="empty__text">
+              Add your first provider key. It is encrypted before it touches the
+              database, and can be validated against the provider at any time.
+            </p>
+            <button class="btn btn--primary" type="button" data-action="add">
+              <svg class="icon">
+                <use href="#i-plus" />
+              </svg>
+              <span class="btn__label">Add your first key</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- ── Account ──────────────────────────────────────────────── -->
+        <section class="view" id="view-account" aria-labelledby="view-title" hidden>
+          <div class="panels panels--account">
+            <section class="panel">
+              <header class="panel__head">
+                <h2 class="panel__title">Identity</h2>
+                <p class="panel__sub">The account this workspace is bound to.</p>
+              </header>
+              <div class="panel__body">
+                <div class="identity identity--lg">
+                  <span class="avatar avatar--lg" id="account-avatar" aria-hidden="true"></span>
+                  <span class="identity__text">
+                    <span class="identity__email identity__email--lg" id="account-email">&nbsp;</span>
+                    <span class="identity__note" id="account-id">&nbsp;</span>
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <header class="panel__head">
+                <h2 class="panel__title">Appearance</h2>
+                <p class="panel__sub">Applies to this device only.</p>
+              </header>
+              <div class="panel__body">
+                <div class="segcontrol segcontrol--full" role="group" aria-label="Colour theme">
+                  <button type="button" class="segcontrol__btn" data-theme-option="system">
+                    <svg class="icon">
+                      <use href="#i-monitor" />
+                    </svg>
+                    <span class="segcontrol__label">System</span>
+                  </button>
+                  <button type="button" class="segcontrol__btn" data-theme-option="light">
+                    <svg class="icon">
+                      <use href="#i-sun" />
+                    </svg>
+                    <span class="segcontrol__label">Light</span>
+                  </button>
+                  <button type="button" class="segcontrol__btn" data-theme-option="dark">
+                    <svg class="icon">
+                      <use href="#i-moon" />
+                    </svg>
+                    <span class="segcontrol__label">Dark</span>
+                  </button>
+                </div>
+                <p class="note">
+                  <svg class="icon">
+                    <use href="#i-info" />
+                  </svg>
+                  <span>System follows your operating system setting.</span>
+                </p>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <header class="panel__head">
+              <h2 class="panel__title">Session</h2>
+              <p class="panel__sub">Ending the session clears this device only.</p>
+            </header>
+            <div class="panel__body panel__body--row">
+              <p class="panel__text">
+                Your session persists between visits so the workspace stays available.
+                Signing out here does not affect other devices.
+              </p>
+              <button class="btn btn--danger" type="button" data-action="logout">
+                <svg class="icon">
+                  <use href="#i-logout" />
+                </svg>
+                <span class="btn__label">Log out</span>
+              </button>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <nav class="tabbar" aria-label="Primary">
+      <a class="tabbar__item" href="#overview" data-view-link="overview">
+        <svg class="icon">
+          <use href="#i-gauge" />
+        </svg>
+        <span class="tabbar__text">Overview</span>
+      </a>
+      <a class="tabbar__item" href="#keys" data-view-link="keys">
+        <svg class="icon">
+          <use href="#i-key" />
+        </svg>
+        <span class="tabbar__text">Keys</span>
+      </a>
+      <a class="tabbar__item" href="#account" data-view-link="account">
+        <svg class="icon">
+          <use href="#i-user" />
+        </svg>
+        <span class="tabbar__text">Account</span>
+      </a>
+    </nav>
   </div>
 
-  <!-- ============================== DIALOG ================================ -->
-  <dialog id="key-dialog" class="dialog" aria-labelledby="dialog-title">
-    <form id="key-form" class="form dialog-form" method="dialog" novalidate>
-      <div class="dialog-head">
-        <h2 id="dialog-title">Add API key</h2>
-        <button id="dialog-close" class="btn btn-ghost btn-icon" type="button" aria-label="Close">✕</button>
+  <!-- ===================================================================
+       DIALOGS
+       =================================================================== -->
+  <dialog class="dialog" id="key-dialog" aria-labelledby="key-dialog-title">
+    <form class="dialog__form" id="key-form" method="dialog" novalidate>
+      <header class="dialog__head">
+        <div>
+          <h2 class="dialog__title" id="key-dialog-title">Add an API key</h2>
+          <p class="dialog__sub" id="key-dialog-sub">Encrypted on submit, before it reaches the database.</p>
+        </div>
+        <button class="btn btn--ghost btn--icon" type="button" data-action="dialog-close">
+          <svg class="icon">
+            <use href="#i-close" />
+          </svg>
+          <span class="sr-only">Close dialog</span>
+        </button>
+      </header>
+
+      <div class="dialog__body">
+        <fieldset class="fieldset">
+          <legend class="fieldset__legend">Credential</legend>
+
+          <div class="field">
+            <label class="field__label" for="f-provider">Provider</label>
+            <div class="field field--select">
+              <select class="input select" id="f-provider" name="provider" required></select>
+              <span class="field__icon field__icon--end"><svg class="icon">
+                  <use href="#i-chevron-down" />
+                </svg></span>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="f-api-key">
+              API key
+              <span class="field__optional" id="key-optional" hidden>Leave blank to keep the current key</span>
+            </label>
+            <div class="field__group">
+              <input class="input input--mono" id="f-api-key" name="api_key" type="password" autocomplete="off"
+                autocapitalize="off" spellcheck="false" placeholder="sk-..." aria-describedby="f-api-key-hint" />
+              <button class="btn btn--ghost btn--icon" type="button" data-action="toggle-secret"
+                aria-label="Show the key as you type">
+                <svg class="icon">
+                  <use href="#i-eye" />
+                </svg>
+              </button>
+            </div>
+            <p class="field__hint" id="f-api-key-hint">Sent straight to the database and encrypted. Never logged.</p>
+          </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
+          <legend class="fieldset__legend">Details <span class="fieldset__note">Optional</span></legend>
+
+          <div class="field">
+            <label class="field__label" for="f-label">Name</label>
+            <input class="input" id="f-label" name="label" type="text" maxlength="120"
+              placeholder="Production, Staging, Personal" />
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="f-description">Description</label>
+            <textarea class="input textarea" id="f-description" name="description" rows="2" maxlength="500"
+              placeholder="What is this key used for?"></textarea>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="f-base-url">API base URL</label>
+            <input class="input input--mono" id="f-base-url" name="api_base_url" type="url" inputmode="url"
+              spellcheck="false" placeholder="https://api.example.com/v1" aria-describedby="f-base-url-hint" />
+            <p class="field__hint" id="f-base-url-hint">Used to validate the key. Required for custom providers.</p>
+          </div>
+        </fieldset>
+
+        <p class="form__error" id="key-error" role="alert" hidden></p>
       </div>
 
-      <label class="field">
-        <span class="field-label">Provider</span>
-        <select id="f-provider" name="provider" required></select>
-      </label>
-
-      <label class="field">
-        <span class="field-label">
-          API key <span id="key-optional" class="field-note" hidden>(leave blank to keep current)</span>
-        </span>
-        <span class="input-group">
-          <input id="f-api-key" name="api_key" type="password" autocomplete="off"
-                 spellcheck="false" placeholder="sk-…" />
-          <button id="toggle-key-visibility" class="btn btn-ghost btn-icon" type="button"
-                  aria-label="Show typed key">👁</button>
-        </span>
-      </label>
-
-      <label class="field">
-        <span class="field-label">Label <span class="field-note">optional</span></span>
-        <input id="f-label" name="label" type="text" maxlength="120" placeholder="e.g. Production" />
-      </label>
-
-      <label class="field">
-        <span class="field-label">Description <span class="field-note">optional</span></span>
-        <textarea id="f-description" name="description" rows="2" maxlength="500"
-                  placeholder="What is this key used for?"></textarea>
-      </label>
-
-      <label class="field">
-        <span class="field-label">API Base URL <span class="field-note">optional</span></span>
-        <input id="f-base-url" name="api_base_url" type="url" inputmode="url"
-               placeholder="https://api.example.com/v1" />
-      </label>
-
-      <div class="dialog-actions">
-        <button id="dialog-cancel" class="btn btn-ghost" type="button">Cancel</button>
-        <button id="dialog-save" class="btn btn-primary" type="submit">Save key</button>
-      </div>
+      <footer class="dialog__foot">
+        <button class="btn btn--ghost" type="button" data-action="dialog-close">
+          <span class="btn__label">Cancel</span>
+        </button>
+        <button class="btn btn--primary" type="submit" id="dialog-save">
+          <span class="btn__label">Save key</span>
+        </button>
+      </footer>
     </form>
   </dialog>
 
-  <!-- =========================== CONFIRM DIALOG =========================== -->
-  <dialog id="confirm-dialog" class="dialog dialog--sm" aria-labelledby="confirm-title">
-    <h2 id="confirm-title">Delete this key?</h2>
-    <p id="confirm-text" class="muted">This permanently removes the encrypted key from your account.</p>
-    <div class="dialog-actions">
-      <button id="confirm-cancel" class="btn btn-ghost" type="button">Cancel</button>
-      <button id="confirm-ok" class="btn btn-danger" type="button">Delete</button>
+  <dialog class="dialog dialog--sm" id="confirm-dialog" aria-labelledby="confirm-title">
+    <header class="dialog__head">
+      <span class="dialog__glyph dialog__glyph--danger">
+        <svg class="icon icon--24">
+          <use href="#i-alert" />
+        </svg>
+      </span>
+      <h2 class="dialog__title" id="confirm-title">Delete this key?</h2>
+    </header>
+    <div class="dialog__body">
+      <p class="dialog__text" id="confirm-text"></p>
+      <p class="dialog__text dialog__text--muted">
+        This removes the encrypted record permanently. A copy held elsewhere is unaffected.
+      </p>
     </div>
+    <footer class="dialog__foot">
+      <button class="btn btn--ghost" type="button" data-action="confirm-cancel">
+        <span class="btn__label">Keep it</span>
+      </button>
+      <button class="btn btn--danger" type="button" id="confirm-ok">
+        <svg class="icon">
+          <use href="#i-trash" />
+        </svg>
+        <span class="btn__label">Delete key</span>
+      </button>
+    </footer>
   </dialog>
 
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <div class="toasts" id="toasts" role="region" aria-label="Notifications"></div>
+
+  <noscript>
+    <p class="noscript">Keyvault needs JavaScript enabled to encrypt and store your keys.</p>
+  </noscript>
 
   <script type="module" src="./app.js"></script>
 </body>
+
 </html>

@@ -1,18 +1,21 @@
 /**
- * KeyVault — AI API key manager (frontend)
+ * Keyvault — AI API key manager
  * ---------------------------------------------------------------------
- * Security model:
- *  - Only the publishable (anon) key is used. No service-role key exists
- *    anywhere in the frontend.
- *  - The browser reads key *metadata* directly, filtered by RLS, which
- *    limits rows to the signed-in user.
- *  - Creating, updating, deleting and decrypting always go through
- *    Postgres RPCs (SECURITY DEFINER) that re-verify ownership in the
- *    database. Plaintext keys are decrypted on demand only, held in
- *    memory, auto-hidden after REVEAL_TIMEOUT_MS, and never written to
- *    storage, the URL, or the console.
- *  - All user-controlled strings are rendered with textContent — never
- *    innerHTML — so stored content cannot inject markup.
+ * SECURITY MODEL (unchanged by the redesign)
+ *
+ *  · Only the publishable key ships to the browser. No service-role key
+ *    exists anywhere in the frontend.
+ *  · Key metadata is read directly, filtered by RLS, which restricts rows
+ *    to the signed-in user.
+ *  · Create, update, delete and decrypt all pass through Postgres RPCs
+ *    (SECURITY DEFINER) that re-verify ownership in the database.
+ *  · Live validation calls an Edge Function with the key *id* only. The
+ *    plaintext is decrypted server-side and sent to the provider solely as
+ *    an Authorization header — never in a URL, never to the browser.
+ *  · Plaintext is held in memory for a 30 second reveal, and is never
+ *    written to storage, the URL, the console, or the document markup.
+ *  · Every user-controlled string is rendered with textContent, so stored
+ *    content cannot inject markup.
  */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import {
@@ -28,270 +31,482 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
 });
 
-/* ------------------------------------------------------------------ *
- * DOM references
- * ------------------------------------------------------------------ */
-const ui = {
-    authView: document.getElementById('auth-view'),
-    appView: document.getElementById('app-view'),
+/* ==================================================================== *
+ * Constants
+ * ==================================================================== */
+const MASK = '•'.repeat(16);
+const THEME_KEY = 'keyvault-theme';
+const SEARCH_DEBOUNCE_MS = 130;
 
-    tabLogin: document.getElementById('tab-login'),
-    tabSignup: document.getElementById('tab-signup'),
-    loginForm: document.getElementById('login-form'),
-    signupForm: document.getElementById('signup-form'),
-    loginEmail: document.getElementById('login-email'),
-    loginPassword: document.getElementById('login-password'),
-    signupEmail: document.getElementById('signup-email'),
-    signupPassword: document.getElementById('signup-password'),
+const KEY_COLUMNS = [
+    'id', 'provider', 'label', 'description', 'api_base_url',
+    'key_last4', 'key_fingerprint',
+    'last_check_at', 'last_check_ok', 'last_check_status', 'last_check_message',
+    'created_at', 'updated_at',
+].join(', ');
 
-    userEmail: document.getElementById('user-email'),
-    logoutBtn: document.getElementById('logout-btn'),
-    syncStatus: document.getElementById('sync-status'),
-    syncLabel: document.getElementById('sync-label'),
-
-    search: document.getElementById('search'),
-    addBtn: document.getElementById('add-btn'),
-    emptyAddBtn: document.getElementById('empty-add-btn'),
-    chips: document.getElementById('provider-chips'),
-    listStatus: document.getElementById('list-status'),
-    grid: document.getElementById('key-grid'),
-    emptyState: document.getElementById('empty-state'),
-
-    dialog: document.getElementById('key-dialog'),
-    dialogTitle: document.getElementById('dialog-title'),
-    dialogClose: document.getElementById('dialog-close'),
-    dialogCancel: document.getElementById('dialog-cancel'),
-    keyForm: document.getElementById('key-form'),
-    fProvider: document.getElementById('f-provider'),
-    fApiKey: document.getElementById('f-api-key'),
-    fLabel: document.getElementById('f-label'),
-    fDescription: document.getElementById('f-description'),
-    fBaseUrl: document.getElementById('f-base-url'),
-    keyOptional: document.getElementById('key-optional'),
-    toggleKeyVisibility: document.getElementById('toggle-key-visibility'),
-
-    confirmDialog: document.getElementById('confirm-dialog'),
-    confirmText: document.getElementById('confirm-text'),
-    confirmCancel: document.getElementById('confirm-cancel'),
-    confirmOk: document.getElementById('confirm-ok'),
-
-    toast: document.getElementById('toast'),
+const VIEWS = {
+    overview: { title: 'Overview', subtitle: 'A summary of every key you hold.' },
+    keys: { title: 'API keys', subtitle: 'Stored, encrypted and validated on demand.' },
+    account: { title: 'Account', subtitle: 'Your identity and workspace preferences.' },
 };
 
-/* ------------------------------------------------------------------ *
- * App state (in memory only — never persisted)
- * ------------------------------------------------------------------ */
+/* ==================================================================== *
+ * Element references
+ * ==================================================================== */
+const $ = (id) => document.getElementById(id);
+
+const el = {
+    // Auth
+    auth: $('auth'),
+    tabLogin: $('tab-login'),
+    tabSignup: $('tab-signup'),
+    panelLogin: $('panel-login'),
+    panelSignup: $('panel-signup'),
+    loginEmail: $('login-email'),
+    loginPassword: $('login-password'),
+    signupEmail: $('signup-email'),
+    signupPassword: $('signup-password'),
+    loginError: $('login-error'),
+    signupError: $('signup-error'),
+
+    // Shell
+    app: $('app'),
+    viewTitle: $('view-title'),
+    viewSubtitle: $('view-subtitle'),
+    sync: $('sync'),
+    syncLabel: $('sync-label'),
+    railKeyCount: $('nav-key-count'),
+    railAvatar: $('rail-avatar'),
+    railEmail: $('rail-email'),
+    accountAvatar: $('account-avatar'),
+    accountEmail: $('account-email'),
+    accountId: $('account-id'),
+
+    // Views
+    viewOverview: $('view-overview'),
+    viewKeys: $('view-keys'),
+    viewAccount: $('view-account'),
+    stats: $('stats'),
+    providerBreakdown: $('provider-breakdown'),
+    activity: $('activity'),
+
+    // Keys
+    search: $('search'),
+    searchKbd: $('search-kbd'),
+    searchClear: $('search-clear'),
+    sort: $('sort'),
+    providerFilters: $('provider-filters'),
+    resultLine: $('result-line'),
+    keysHost: $('keys-host'),
+    keysEmpty: $('keys-empty'),
+
+    // Dialogs
+    keyDialog: $('key-dialog'),
+    keyDialogTitle: $('key-dialog-title'),
+    keyDialogSub: $('key-dialog-sub'),
+    keyForm: $('key-form'),
+    dialogSave: $('dialog-save'),
+    keyError: $('key-error'),
+    fProvider: $('f-provider'),
+    fApiKey: $('f-api-key'),
+    fLabel: $('f-label'),
+    fDescription: $('f-description'),
+    fBaseUrl: $('f-base-url'),
+    keyOptional: $('key-optional'),
+
+    confirmDialog: $('confirm-dialog'),
+    confirmText: $('confirm-text'),
+    confirmOk: $('confirm-ok'),
+
+    toasts: $('toasts'),
+};
+
+/* ==================================================================== *
+ * In-memory state. Nothing here is ever persisted.
+ * ==================================================================== */
 const state = {
     user: null,
     keys: [],
+    checks: new Map(),      // id -> { state, message, status, at }
+    revealed: new Map(),    // id -> plaintext, only while revealed
+    revealTimers: new Map(),
     query: '',
     providerFilter: 'All',
-    revealed: new Map(),   // id -> plaintext (only while revealed)
-    revealTimers: new Map(),
+    sort: 'updated',
+    view: 'overview',
     editingId: null,
     pendingDeleteId: null,
-    realtimeChannel: null,
-    checks: new Map(),     // id -> { state, message, status, at } for live probes
+    busyIds: new Set(),
+    channel: null,
 };
 
-const MASK = '••••••••••••••';
-
-/* ------------------------------------------------------------------ *
- * Small utilities
- * ------------------------------------------------------------------ */
-function el(tag, props = {}, children = []) {
-    const node = document.createElement(tag);
+/* ==================================================================== *
+ * Utilities
+ * ==================================================================== */
+function node(tag, props = {}, children = []) {
+    const element = document.createElement(tag);
     for (const [key, value] of Object.entries(props)) {
-        if (value === undefined || value === null) continue;
-        if (key === 'class') node.className = value;
-        else if (key === 'text') node.textContent = value;
-        else if (key === 'dataset') Object.assign(node.dataset, value);
+        if (value === undefined || value === null || value === false) continue;
+        if (key === 'class') element.className = value;
+        else if (key === 'text') element.textContent = value;
+        else if (key === 'dataset') Object.assign(element.dataset, value);
         else if (key.startsWith('on') && typeof value === 'function') {
-            node.addEventListener(key.slice(2).toLowerCase(), value);
-        } else if (value === true) node.setAttribute(key, '');
-        else node.setAttribute(key, value);
+            element.addEventListener(key.slice(2).toLowerCase(), value);
+        } else if (value === true) element.setAttribute(key, '');
+        else element.setAttribute(key, value);
     }
     for (const child of [].concat(children)) {
         if (child === null || child === undefined || child === false) continue;
-        node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+        element.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
-    return node;
+    return element;
 }
 
-/**
- * Supabase/Postgres errors carry technical text. Map the common ones to
- * something a person can act on, without leaking internals.
- */
-function friendlyError(error) {
-    if (!error) return 'Something went wrong.';
-    const code = error.code || '';
-    const msg = (error.message || '').toLowerCase();
-    if (msg.includes('invalid login credentials')) return 'Email or password is incorrect.';
-    if (msg.includes('email not confirmed')) return 'Please confirm your email address first.';
-    if (msg.includes('user already registered')) return 'That email is already registered. Try logging in.';
-    if (msg.includes('not authenticated')) return 'Your session expired. Please log in again.';
-    if (msg.includes('not found')) return 'That key no longer exists.';
-    if (msg.includes('cannot be empty')) return 'Please enter the API key.';
-    if (code === '23505') return 'That value already exists.';
-    if (msg.includes('password should be at least')) return 'Password must be at least 6 characters.';
-    if (msg.includes('failed to fetch') || msg.includes('networkerror')) {
-        return 'Network problem. Check your connection and try again.';
-    }
-    return error.message || 'Something went wrong.';
+/** SVG element that references a sprite symbol. */
+function icon(id, cls = 'icon') {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', cls);
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', `#${id}`);
+    svg.append(use);
+    return svg;
 }
 
-let toastTimer = null;
-function toast(message, kind = 'info') {
-    ui.toast.textContent = message;
-    ui.toast.dataset.kind = kind;
-    ui.toast.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { ui.toast.hidden = true; }, kind === 'error' ? 5000 : 2600);
+/* ---- Formatting ---- */
+const dateTimeFmt = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+const relFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+function formatDateTime(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? '' : dateTimeFmt.format(date);
 }
 
-async function copyText(text) {
-    try {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text);
-            return true;
-        }
-    } catch { /* fall through to legacy path */ }
-
-    // Fallback for non-secure contexts (e.g. plain http on a LAN IP).
-    const ta = el('textarea', { style: 'position:fixed;top:-1000px;opacity:0' });
-    ta.value = text;
-    document.body.append(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand('copy'); } catch { ok = false; }
-    ta.remove();
-    return ok;
-}
-
-const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 function formatDate(iso) {
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? '' : dateFmt.format(d);
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? '' : dateFmt.format(date);
+}
+
+function formatRelative(iso) {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    const seconds = Math.round((date.getTime() - Date.now()) / 1000);
+    const abs = Math.abs(seconds);
+    if (abs < 45) return 'just now';
+    if (abs < 3600) return relFmt.format(Math.round(seconds / 60), 'minute');
+    if (abs < 86400) return relFmt.format(Math.round(seconds / 3600), 'hour');
+    if (abs < 604800) return relFmt.format(Math.round(seconds / 86400), 'day');
+    return formatDate(iso);
+}
+
+function initialsFrom(email) {
+    if (!email) return '·';
+    const name = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, ' ').trim();
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return (email[0] + (email[1] ?? '')).toUpperCase();
 }
 
 function maskFor(item) {
     return item.key_last4 ? `${MASK}${item.key_last4}` : MASK;
 }
 
-/* ------------------------------------------------------------------ *
- * Auth screen
- * ------------------------------------------------------------------ */
-function switchAuthTab(mode) {
-    const isLogin = mode === 'login';
-    ui.tabLogin.classList.toggle('is-active', isLogin);
-    ui.tabSignup.classList.toggle('is-active', !isLogin);
-    ui.tabLogin.setAttribute('aria-selected', String(isLogin));
-    ui.tabSignup.setAttribute('aria-selected', String(!isLogin));
-    ui.loginForm.hidden = !isLogin;
-    ui.signupForm.hidden = isLogin;
-    (isLogin ? ui.loginEmail : ui.signupEmail).focus();
+/**
+ * Translate library/Postgres errors into language a person can act on,
+ * without leaking internals.
+ */
+function friendlyError(error) {
+    if (!error) return 'Something went wrong.';
+    const code = error.code ?? '';
+    const message = String(error.message ?? '').toLowerCase();
+
+    if (message.includes('invalid login credentials')) return 'Email or password is incorrect.';
+    if (message.includes('email not confirmed')) return 'Confirm your email address, then log in.';
+    if (message.includes('user already registered')) return 'That email already has an account. Log in instead.';
+    if (message.includes('not authenticated')) return 'Your session expired. Log in again to continue.';
+    if (message.includes('not found')) return 'That key no longer exists.';
+    if (message.includes('cannot be empty')) return 'Enter the API key before saving.';
+    if (message.includes('too long')) return 'That key is longer than the 1024 character limit.';
+    if (message.includes('password should be at least')) return 'Use a password of at least 6 characters.';
+    if (message.includes('failed to fetch') || message.includes('networkerror')) {
+        return 'Network problem. Check your connection and try again.';
+    }
+    if (code === '23505') return 'That value already exists.';
+    return error.message || 'Something went wrong.';
 }
 
-ui.tabLogin.addEventListener('click', () => switchAuthTab('login'));
-ui.tabSignup.addEventListener('click', () => switchAuthTab('signup'));
+/* ---- Toasts ---- */
+function toast(message, kind = 'info', timeout) {
+    const glyph = kind === 'ok' ? 'i-check-circle' : (kind === 'error' ? 'i-x-circle' : 'i-info');
+    const element = node('div', { class: `toast toast--${kind}`, role: 'status' }, [
+        node('span', { class: 'toast__icon' }, [icon(glyph)]),
+        node('span', { class: 'toast__text', text: message }),
+    ]);
+    el.toasts.append(element);
 
-function setBusy(form, busy) {
-    const button = form.querySelector('button[type="submit"]');
-    if (!button) return;
-    if (busy) {
-        button.dataset.label = button.textContent;
-        button.disabled = true;
-        button.textContent = 'Please wait…';
-    } else {
-        button.disabled = false;
-        if (button.dataset.label) button.textContent = button.dataset.label;
+    const duration = timeout ?? (kind === 'error' ? 5200 : 3000);
+    setTimeout(() => {
+        element.dataset.leaving = 'true';
+        element.addEventListener('animationend', () => element.remove(), { once: true });
+        setTimeout(() => element.remove(), 400);
+    }, duration);
+}
+
+/* ---- Clipboard ---- */
+async function copyText(text) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch { /* fall through to the legacy path */ }
+
+    const scratch = node('textarea', { style: 'position:fixed;top:-1000px;opacity:0' });
+    scratch.value = text;
+    document.body.append(scratch);
+    scratch.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    scratch.remove();
+    return ok;
+}
+
+/* ==================================================================== *
+ * Theme
+ * ==================================================================== */
+function applyTheme(preference) {
+    const resolved = preference === 'light' || preference === 'dark' ? preference : 'system';
+    document.documentElement.setAttribute('data-theme', resolved);
+    try { localStorage.setItem(THEME_KEY, resolved); } catch { /* ignore */ }
+
+    for (const button of document.querySelectorAll('[data-theme-option]')) {
+        button.classList.toggle('is-active', button.dataset.themeOption === resolved);
+        button.setAttribute('aria-pressed', String(button.dataset.themeOption === resolved));
     }
 }
 
-ui.loginForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const email = ui.loginEmail.value.trim();
-    const password = ui.loginPassword.value;
-    if (!email || !password) return toast('Enter your email and password.', 'error');
+function initTheme() {
+    applyTheme(document.documentElement.getAttribute('data-theme') || 'system');
+    for (const button of document.querySelectorAll('[data-theme-option]')) {
+        button.addEventListener('click', () => applyTheme(button.dataset.themeOption));
+    }
+}
 
-    setBusy(ui.loginForm, true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(ui.loginForm, false);
+/* ==================================================================== *
+ * View routing (hash based, so refresh and back/forward both work)
+ * ==================================================================== */
+function setView(view, { focus = false } = {}) {
+    const next = VIEWS[view] ? view : 'overview';
+    state.view = next;
 
-    if (error) return toast(friendlyError(error), 'error');
-    ui.loginForm.reset();
-});
+    for (const [name, section] of Object.entries({
+        overview: el.viewOverview,
+        keys: el.viewKeys,
+        account: el.viewAccount,
+    })) {
+        section.hidden = name !== next;
+    }
 
-ui.signupForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const email = ui.signupEmail.value.trim();
-    const password = ui.signupPassword.value;
-    if (!email || !password) return toast('Enter an email and password.', 'error');
-    if (password.length < 6) return toast('Password must be at least 6 characters.', 'error');
+    el.viewTitle.textContent = VIEWS[next].title;
+    el.viewSubtitle.textContent = VIEWS[next].subtitle;
 
-    setBusy(ui.signupForm, true);
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    setBusy(ui.signupForm, false);
+    for (const link of document.querySelectorAll('[data-view-link]')) {
+        const active = link.dataset.viewLink === next;
+        link.classList.toggle('is-active', active);
+        if (active) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
+    }
 
-    if (error) return toast(friendlyError(error), 'error');
-    ui.signupForm.reset();
+    if (next === 'keys' && focus) el.search.focus();
+    if (next === 'overview') renderOverview();
+}
 
-    if (data.session) toast('Account created. Welcome!', 'success');
-    else toast('Account created. Check your email to confirm, then log in.', 'success');
-});
+function initRouter() {
+    const fromHash = () => {
+        const name = window.location.hash.replace(/^#/, '');
+        setView(VIEWS[name] ? name : 'overview');
+    };
 
-ui.logoutBtn.addEventListener('click', async () => {
+    window.addEventListener('hashchange', fromHash);
+
+    for (const link of document.querySelectorAll('[data-view-link]')) {
+        link.addEventListener('click', () => {
+            // Let the hash change, then move focus for keyboard and screen readers.
+            setTimeout(() => {
+                el.viewTitle.setAttribute('tabindex', '-1');
+                el.viewTitle.focus({ preventScroll: true });
+            }, 0);
+        });
+    }
+
+    return fromHash;
+}
+
+/* ==================================================================== *
+ * Auth
+ * ==================================================================== */
+function switchAuthTab(mode) {
+    const isLogin = mode === 'login';
+    el.tabLogin.classList.toggle('is-active', isLogin);
+    el.tabSignup.classList.toggle('is-active', !isLogin);
+    el.tabLogin.setAttribute('aria-selected', String(isLogin));
+    el.tabSignup.setAttribute('aria-selected', String(!isLogin));
+    el.panelLogin.hidden = !isLogin;
+    el.panelSignup.hidden = isLogin;
+    clearFormError(el.loginError);
+    clearFormError(el.signupError);
+    (isLogin ? el.loginEmail : el.signupEmail).focus();
+}
+
+function clearFormError(target) {
+    target.hidden = true;
+    target.textContent = '';
+}
+
+function showFormError(target, message) {
+    target.textContent = message;
+    target.hidden = false;
+}
+
+function setFormBusy(form, busy) {
+    const button = form.querySelector('button[type="submit"]');
+    if (!button) return;
+    button.disabled = busy;
+    if (busy) button.dataset.busy = 'true';
+    else delete button.dataset.busy;
+}
+
+function initAuth() {
+    el.tabLogin.addEventListener('click', () => switchAuthTab('login'));
+    el.tabSignup.addEventListener('click', () => switchAuthTab('signup'));
+
+    el.panelLogin.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        clearFormError(el.loginError);
+
+        const email = el.loginEmail.value.trim();
+        const password = el.loginPassword.value;
+        if (!email || !password) {
+            showFormError(el.loginError, 'Enter both your email address and password.');
+            return;
+        }
+
+        setFormBusy(el.panelLogin, true);
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        setFormBusy(el.panelLogin, false);
+
+        if (error) {
+            showFormError(el.loginError, friendlyError(error));
+            return;
+        }
+        el.loginPassword.value = '';
+    });
+
+    el.panelSignup.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        clearFormError(el.signupError);
+
+        const email = el.signupEmail.value.trim();
+        const password = el.signupPassword.value;
+        if (!email || !password) {
+            showFormError(el.signupError, 'Enter both an email address and a password.');
+            return;
+        }
+        if (password.length < 6) {
+            showFormError(el.signupError, 'Use a password of at least 6 characters.');
+            return;
+        }
+
+        setFormBusy(el.panelSignup, true);
+        const { data, error } = await supabase.auth.signUp({ email, password });
+        setFormBusy(el.panelSignup, false);
+
+        if (error) {
+            showFormError(el.signupError, friendlyError(error));
+            return;
+        }
+
+        el.signupPassword.value = '';
+        if (data.session) toast('Account created. Welcome to Keyvault.', 'ok');
+        else toast('Account created. Confirm your email, then log in.', 'info', 6000);
+    });
+}
+
+async function signOut() {
+    teardownRealtime();
+    clearRevealed();
     await supabase.auth.signOut();
-    toast('Logged out.');
-});
+    toast('Signed out of this device.', 'info');
+}
 
-/* ------------------------------------------------------------------ *
- * Session / view switching
- * ------------------------------------------------------------------ */
-function showAuth() {
+/* ==================================================================== *
+ * Session lifecycle
+ * ==================================================================== */
+function enterAuthScreen() {
     teardownRealtime();
     clearRevealed();
     state.keys = [];
     state.checks.clear();
     state.user = null;
-    ui.appView.hidden = true;
-    ui.authView.hidden = false;
-    ui.loginPassword.value = '';
-    ui.signupPassword.value = '';
+    state.busyIds.clear();
+
+    el.app.hidden = true;
+    el.auth.hidden = false;
+    el.loginPassword.value = '';
+    el.signupPassword.value = '';
     switchAuthTab('login');
 }
 
-async function showApp(user) {
+async function enterApp(user) {
     state.user = user;
-    ui.userEmail.textContent = user.email || '';
-    ui.authView.hidden = true;
-    ui.appView.hidden = false;
-    ui.search.value = '';
+    const email = user.email ?? '';
+
+    el.railEmail.textContent = email;
+    el.accountEmail.textContent = email;
+    el.accountId.textContent = user.id;
+    const initials = initialsFrom(email);
+    el.railAvatar.textContent = initials;
+    el.accountAvatar.textContent = initials;
+
+    el.auth.hidden = true;
+    el.app.hidden = false;
+
+    el.search.value = '';
     state.query = '';
     state.providerFilter = 'All';
-    renderSkeletons();
+    el.sort.value = 'updated';
+    state.sort = 'updated';
+
+    renderSkeleton();
     await loadKeys();
     subscribeRealtime();
 }
 
-supabase.auth.onAuthStateChange((event, session) => {
-    // Defer so supabase-js finishes its internal lock handling first.
+supabase.auth.onAuthStateChange((_event, session) => {
+    // Defer so supabase-js releases its internal lock first.
     setTimeout(() => {
-        if (session?.user) showApp(session.user);
-        else showAuth();
+        if (session?.user) enterApp(session.user);
+        else enterAuthScreen();
     }, 0);
 });
 
-/* ------------------------------------------------------------------ *
- * Loading & realtime
- * ------------------------------------------------------------------ */
-const KEY_COLUMNS = 'id, provider, label, description, api_base_url, key_last4, key_fingerprint, '
-    + 'last_check_at, last_check_ok, last_check_status, last_check_message, created_at, updated_at';
+/* ==================================================================== *
+ * Data loading
+ * ==================================================================== */
+function renderSkeleton() {
+    const skeletonCard = node('div', { class: 'skeleton', style: 'height:132px' });
+    const rows = Array.from({ length: 4 }, () =>
+        node('div', { class: 'skeleton', style: 'height:44px;border-radius:0' }));
 
-function renderSkeletons() {
-    ui.grid.replaceChildren(...Array.from({ length: 3 }, () => el('div', { class: 'skeleton' })));
-    ui.emptyState.hidden = true;
-    ui.listStatus.textContent = 'Loading your keys…';
+    el.keysHost.replaceChildren(
+        node('div', { class: 'cards' }, [skeletonCard, skeletonCard]),
+        node('div', { class: 'tablecard' }, [node('div', { style: 'padding:12px' }, rows)]),
+    );
+    el.keysEmpty.hidden = true;
+    el.resultLine.textContent = 'Loading your keys…';
 }
 
 async function loadKeys() {
@@ -301,24 +516,29 @@ async function loadKeys() {
         .order('created_at', { ascending: false });
 
     if (error) {
-        ui.grid.replaceChildren();
-        ui.listStatus.textContent = '';
+        el.keysHost.replaceChildren();
+        el.resultLine.textContent = '';
+        showFormError(el.keyError, '');
         toast(friendlyError(error), 'error');
         return;
     }
+
     state.keys = data ?? [];
-    render();
+    renderAll();
 }
 
-function setSyncStatus(stateName, label) {
-    ui.syncStatus.dataset.state = stateName;
-    ui.syncLabel.textContent = label;
+/* ==================================================================== *
+ * Realtime
+ * ==================================================================== */
+function setSync(stateName, label) {
+    el.sync.dataset.state = stateName;
+    el.syncLabel.textContent = label;
 }
 
 function teardownRealtime() {
-    if (state.realtimeChannel) {
-        supabase.removeChannel(state.realtimeChannel);
-        state.realtimeChannel = null;
+    if (state.channel) {
+        supabase.removeChannel(state.channel);
+        state.channel = null;
     }
 }
 
@@ -326,287 +546,468 @@ function subscribeRealtime() {
     teardownRealtime();
     if (!state.user) return;
 
-    setSyncStatus('connecting', 'Syncing');
-    state.realtimeChannel = supabase
+    setSync('connecting', 'Connecting');
+    state.channel = supabase
         .channel(`api_keys:${state.user.id}`)
         .on(
             'postgres_changes',
-            {
-                event: '*',
-                schema: 'public',
-                table: 'api_keys',
-                filter: `user_id=eq.${state.user.id}`,
-            },
+            { event: '*', schema: 'public', table: 'api_keys', filter: `user_id=eq.${state.user.id}` },
             () => { loadKeys(); },
         )
         .subscribe((status) => {
-            if (status === 'SUBSCRIBED') setSyncStatus('online', 'Live');
-            else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setSyncStatus('offline', 'Offline');
-            else if (status === 'CLOSED') setSyncStatus('connecting', 'Paused');
+            if (status === 'SUBSCRIBED') setSync('online', 'Live');
+            else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') setSync('offline', 'Offline');
+            else if (status === 'CLOSED') setSync('connecting', 'Paused');
         });
 }
 
-/* ------------------------------------------------------------------ *
- * Filtering (client-side: metadata only, never decrypted values)
- * ------------------------------------------------------------------ */
+/* ==================================================================== *
+ * Selection: filter + sort
+ * ==================================================================== */
 function visibleKeys() {
-    const q = state.query.trim().toLowerCase();
-    return state.keys.filter((item) => {
+    const query = state.query.trim().toLowerCase();
+
+    const filtered = state.keys.filter((item) => {
         if (state.providerFilter !== 'All' && item.provider !== state.providerFilter) return false;
-        if (!q) return true;
+        if (!query) return true;
         return [item.provider, item.label, item.description, item.api_base_url, item.key_last4]
             .filter(Boolean)
-            .some((value) => String(value).toLowerCase().includes(q));
+            .some((value) => String(value).toLowerCase().includes(query));
     });
+
+    const sorters = {
+        updated: (a, b) => new Date(b.updated_at) - new Date(a.updated_at),
+        created: (a, b) => new Date(b.created_at) - new Date(a.created_at),
+        provider: (a, b) => a.provider.localeCompare(b.provider) || (a.label ?? '').localeCompare(b.label ?? ''),
+        name: (a, b) => (a.label ?? a.provider).localeCompare(b.label ?? b.provider),
+    };
+
+    return filtered.sort(sorters[state.sort] ?? sorters.updated);
 }
 
-function renderChips() {
-    const counts = new Map([['All', state.keys.length]]);
-    for (const name of PROVIDERS) counts.set(name, 0);
-    for (const item of state.keys) {
-        counts.set(item.provider, (counts.get(item.provider) ?? 0) + 1);
+/* ==================================================================== *
+ * Rendering — shared pieces
+ * ==================================================================== */
+function providerChip(provider) {
+    return node('span', { class: 'provider', dataset: { provider } }, [
+        node('span', { class: 'provider__dot' }),
+        provider,
+    ]);
+}
+
+function checkPill(item) {
+    const live = state.checks.get(item.id);
+    const ok = live ? live.state === 'ok' : item.last_check_ok;
+    const pending = live?.state === 'pending';
+
+    if (pending) {
+        return node('span', { class: 'pill pill--warn' }, [icon('i-pulse'), node('span', { class: 'pill__text', text: 'Checking' })]);
+    }
+    if (ok === true) {
+        return node('span', { class: 'pill pill--ok' }, [icon('i-shield-check'), node('span', { class: 'pill__text', text: 'Verified' })]);
+    }
+    if (ok === false) {
+        return node('span', { class: 'pill pill--fail' }, [icon('i-shield-alert'), node('span', { class: 'pill__text', text: 'Failed' })]);
+    }
+    return node('span', { class: 'pill pill--neutral' }, [icon('i-clock'), node('span', { class: 'pill__text', text: 'Untested' })]);
+}
+
+/** The masked or revealed key, with reveal and copy affordances. */
+function secretControl(item) {
+    const revealed = state.revealed.has(item.id);
+    const text = node('span', {
+        class: `secret__text${revealed ? ' is-revealed' : ''}`,
+        text: revealed ? state.revealed.get(item.id) : maskFor(item),
+        title: revealed ? 'Decrypted in this browser only' : 'Encrypted at rest',
+    });
+
+    const revealButton = node('button', {
+        type: 'button',
+        class: 'secret__btn',
+        'aria-label': revealed ? 'Hide the key' : 'Reveal the key',
+        title: revealed ? 'Hide' : 'Reveal',
+        onclick: () => (revealed ? hideKey(item.id) : revealKey(item.id)),
+    }, [icon(revealed ? 'i-eye-off' : 'i-eye')]);
+
+    const copyButton = node('button', {
+        type: 'button',
+        class: 'secret__btn',
+        'aria-label': 'Copy the key to the clipboard',
+        title: 'Copy',
+        onclick: () => copyKey(item, copyButton),
+    }, [icon('i-copy')]);
+
+    return node('span', { class: 'secret' }, [
+        text,
+        node('span', { class: 'secret__actions' }, [revealButton, copyButton]),
+    ]);
+}
+
+/** Persistent status line for the last validation result. */
+function checkResult(item) {
+    const live = state.checks.get(item.id);
+    const pending = live?.state === 'pending';
+    const ok = live ? live.state === 'ok' : item.last_check_ok;
+    const message = live ? live.message : item.last_check_message;
+    const checkedAt = live ? live.at : item.last_check_at;
+    const status = live ? live.status : item.last_check_status;
+
+    if (!pending && !message && !checkedAt) return null;
+
+    const variant = pending ? 'pending' : (ok ? 'ok' : 'fail');
+    const glyph = pending ? 'i-pulse' : (ok ? 'i-check-circle' : 'i-x-circle');
+
+    const metaParts = [];
+    if (status) metaParts.push(`HTTP ${status}`);
+    if (checkedAt) metaParts.push(`Checked ${formatRelative(checkedAt)}`);
+    if (item.api_base_url) metaParts.push('Base URL from your record');
+    else metaParts.push(`Probe ${TEST_PROBE_PATH} against the provider default`);
+
+    return node('div', { class: `check check--${variant}` }, [
+        node('span', { class: 'check__icon' }, [icon(glyph)]),
+        node('span', { class: 'check__body' }, [
+            node('span', { class: 'check__message', text: message || 'Contacting the provider…' }),
+            node('span', { class: 'check__meta', text: metaParts.join(' · ') }),
+        ]),
+    ]);
+}
+
+function actionButton({ glyph, label, onClick, danger = false, extraClass = '' }) {
+    return node('button', {
+        type: 'button',
+        class: `action${danger ? ' action--danger' : ''}${extraClass ? ` ${extraClass}` : ''}`,
+        'aria-label': label,
+        title: label,
+        onclick: onClick,
+    }, [icon(glyph)]);
+}
+
+function keyActions(item, { withLabels = false } = {}) {
+    const live = state.checks.get(item.id);
+    const testState = live?.state === 'pending' ? '' : (item.last_check_ok === true ? 'ok' : (item.last_check_ok === false ? 'fail' : ''));
+
+    const test = node('button', {
+        type: 'button',
+        class: `action action--test${withLabels ? ' action--labelled' : ''}`,
+        dataset: { state: testState },
+        'aria-label': `Validate ${item.label ?? item.provider} against its provider`,
+        title: 'Validate against the provider',
+        onclick: () => testKey(item),
+    }, [icon('i-pulse')]);
+
+    const edit = actionButton({
+        glyph: 'i-pencil',
+        label: `Edit ${item.label ?? item.provider}`,
+        onClick: () => openKeyDialog(item),
+    });
+
+    const remove = actionButton({
+        glyph: 'i-trash',
+        label: `Delete ${item.label ?? item.provider}`,
+        onClick: () => confirmDelete(item),
+        danger: true,
+    });
+
+    return node('span', { class: 'rowactions' }, [test, edit, remove]);
+}
+
+/* ==================================================================== *
+ * Rendering — table row & card
+ * ==================================================================== */
+function tableRow(item) {
+    const baseUrl = item.api_base_url;
+
+    return node('tr', {}, [
+        node('td', { class: 'cell-name' }, [
+            node('span', { class: 'cell-name__title', text: item.label || `${item.provider} key` }),
+            node('span', {
+                class: 'cell-name__sub',
+                text: item.description || (baseUrl ? baseUrl.replace(/^https?:\/\//i, '') : 'No description'),
+            }),
+        ]),
+        node('td', { class: 'cell-provider' }, [providerChip(item.provider)]),
+        node('td', { class: 'cell-key' }, [secretControl(item)]),
+        node('td', {}, [checkPill(item)]),
+        node('td', { class: 'cell-time', text: formatRelative(item.updated_at), title: formatDateTime(item.updated_at) }),
+        node('td', { class: 'cell-actions' }, [keyActions(item)]),
+    ]);
+}
+
+function keyCard(item) {
+    const baseUrl = item.api_base_url;
+    const isLink = typeof baseUrl === 'string' && /^https?:\/\//i.test(baseUrl);
+
+    const metaRows = [];
+
+    if (baseUrl) {
+        metaRows.push(node('div', { class: 'card__metarow' }, [
+            node('span', { class: 'card__metalabel', text: 'Base URL' }),
+            node('span', { class: 'card__metaval' }, [
+                isLink
+                    ? node('a', {
+                        href: baseUrl,
+                        target: '_blank',
+                        rel: 'noopener noreferrer nofollow',
+                        text: baseUrl,
+                    })
+                    : node('span', { text: baseUrl }),
+            ]),
+        ]));
     }
 
-    const names = ['All', ...PROVIDERS.filter((p) => (counts.get(p) ?? 0) > 0 || p !== 'Custom')];
-    ui.chips.replaceChildren(
+    metaRows.push(node('div', { class: 'card__metarow' }, [
+        node('span', { class: 'card__metalabel', text: 'Status' }),
+        node('span', { class: 'card__metaval' }, [checkPill(item)]),
+    ]));
+
+    return node('article', { class: 'card' }, [
+        node('div', { class: 'card__head' }, [
+            node('div', { class: 'card__titles' }, [
+                node('span', { class: 'card__title', text: item.label || `${item.provider} key` }),
+                item.description ? node('span', { class: 'card__desc', text: item.description }) : null,
+            ]),
+            providerChip(item.provider),
+        ]),
+
+        node('div', { class: 'card__keys' }, [
+            node('div', { class: 'card__metarow' }, [
+                node('span', { class: 'card__metalabel', text: 'Key' }),
+                secretControl(item),
+            ]),
+            ...metaRows,
+        ]),
+
+        checkResult(item),
+
+        node('div', { class: 'card__foot' }, [
+            node('span', {
+                class: 'card__time',
+                text: `Updated ${formatRelative(item.updated_at)}`,
+                title: formatDateTime(item.updated_at),
+            }),
+            keyActions(item),
+        ]),
+    ]);
+}
+
+/* ==================================================================== *
+ * Rendering — keys view
+ * ==================================================================== */
+function renderFilters() {
+    const counts = new Map([['All', state.keys.length]]);
+    for (const name of PROVIDERS) counts.set(name, 0);
+    for (const item of state.keys) counts.set(item.provider, (counts.get(item.provider) ?? 0) + 1);
+
+    // "All" always shows; a provider shows once it has keys.
+    const names = ['All', ...PROVIDERS.filter((name) => name === 'Custom' || (counts.get(name) ?? 0) > 0)];
+
+    el.providerFilters.replaceChildren(
         ...names.map((name) =>
-            el('button', {
+            node('button', {
                 type: 'button',
-                class: `chip${state.providerFilter === name ? ' is-active' : ''}`,
+                class: `filter${state.providerFilter === name ? ' is-active' : ''}`,
                 'aria-pressed': String(state.providerFilter === name),
+                dataset: name === 'Custom' ? {} : { provider: name },
                 onclick: () => {
                     state.providerFilter = name;
-                    render();
+                    renderKeys();
                 },
             }, [
-                name === 'All' ? 'All providers' : name,
-                el('span', { class: 'count', text: String(counts.get(name) ?? 0) }),
+                name === 'All' ? 'All providers' : providerChip(name),
+                node('span', { class: 'filter__count', text: String(counts.get(name) ?? 0) }),
             ]),
         ),
     );
 }
 
-/* ------------------------------------------------------------------ *
- * Rendering
- * ------------------------------------------------------------------ */
-function render() {
-    renderChips();
+function renderKeys() {
+    renderFilters();
 
     const items = visibleKeys();
-    clearRevealedExcept(items.map((i) => i.id));
+    keepRevealedOnly(items.map((item) => item.id));
 
-    ui.grid.replaceChildren();
+    el.railKeyCount.textContent = String(state.keys.length);
 
     if (state.keys.length === 0) {
-        ui.emptyState.hidden = false;
-        ui.listStatus.textContent = '';
+        el.keysHost.replaceChildren();
+        el.keysEmpty.hidden = false;
+        el.resultLine.textContent = '';
         return;
     }
-    ui.emptyState.hidden = true;
+
+    el.keysEmpty.hidden = true;
 
     if (items.length === 0) {
-        ui.listStatus.textContent = 'No keys match your search.';
+        el.keysHost.replaceChildren();
+        el.resultLine.textContent = 'No keys match the current search or filter.';
         return;
     }
 
-    ui.listStatus.textContent =
-        `${items.length} of ${state.keys.length} key${state.keys.length === 1 ? '' : 's'}`;
-    ui.grid.replaceChildren(...items.map(renderCard));
-}
+    const noun = state.keys.length === 1 ? 'key' : 'keys';
+    el.resultLine.textContent = items.length === state.keys.length
+        ? `${state.keys.length} ${noun} stored`
+        : `${items.length} of ${state.keys.length} ${noun}`;
 
-function renderCard(item) {
-    const isRevealed = state.revealed.has(item.id);
-    const valueText = isRevealed ? state.revealed.get(item.id) : maskFor(item);
-
-    const keyValue = el('code', {
-        class: `key-value${isRevealed ? ' is-revealed' : ''}`,
-        text: valueText,
-        title: isRevealed ? 'Decrypted value — visible in this browser only' : 'Encrypted · hidden',
-    });
-
-    const revealBtn = el('button', {
-        type: 'button',
-        class: 'btn btn-ghost btn-icon',
-        'aria-label': isRevealed ? 'Hide key' : 'Reveal key',
-        title: isRevealed ? 'Hide' : 'Reveal',
-        onclick: () => (isRevealed ? hideKey(item.id) : revealKey(item.id)),
-    }, [isRevealed ? '🙈' : '👁']);
-
-    const copyBtn = el('button', {
-        type: 'button',
-        class: 'btn btn-ghost btn-icon',
-        'aria-label': 'Copy key',
-        title: 'Copy',
-        onclick: () => copyKey(item, copyBtn),
-    }, ['⧉']);
-
-    const card = el('article', { class: 'card' }, [
-        el('div', { class: 'card-head' }, [
-            el('div', { class: 'card-titles' }, [
-                el('h3', { class: 'card-title', text: item.label || `${item.provider} key` }),
-                item.description ? el('p', { class: 'card-sub', text: item.description }) : null,
-            ]),
-            el('span', {
-                class: `badge${item.provider === 'Custom' ? ' badge--custom' : ''}`,
-                text: item.provider,
-            }),
-        ]),
-
-        el('div', { class: 'key-row' }, [
-            keyValue,
-            el('div', { class: 'key-actions' }, [revealBtn, copyBtn]),
-        ]),
-
-        item.api_base_url
-            ? el('div', { class: 'meta' }, [
-                el('div', { class: 'meta-row' }, [
-                    el('span', { class: 'meta-label', text: 'Base URL' }),
-                    el('span', { class: 'meta-val' }, [
-                        // Only render a real link for http(s); anything else
-                        // (e.g. a hand-crafted javascript: URL) stays inert text.
-                        /^https?:\/\//i.test(item.api_base_url)
-                            ? el('a', {
-                                href: item.api_base_url,
-                                target: '_blank',
-                                rel: 'noopener noreferrer nofollow',
-                                text: item.api_base_url,
-                            })
-                            : el('span', { text: item.api_base_url }),
+    el.keysHost.replaceChildren(
+        node('div', { class: 'cards' }, items.map(keyCard)),
+        node('div', { class: 'tablecard' }, [
+            node('div', { class: 'tablewrap' }, [
+                node('table', { class: 'table' }, [
+                    node('thead', {}, [
+                        node('tr', {}, [
+                            node('th', { scope: 'col', text: 'Name' }),
+                            node('th', { scope: 'col', text: 'Provider' }),
+                            node('th', { scope: 'col', text: 'API key' }),
+                            node('th', { scope: 'col', text: 'Validation' }),
+                            node('th', { scope: 'col', text: 'Updated' }),
+                            node('th', { scope: 'col' }, [node('span', { class: 'sr-only', text: 'Actions' })]),
+                        ]),
                     ]),
+                    node('tbody', {}, items.map(tableRow)),
                 ]),
-            ])
-            : null,
-
-        renderCheckResult(item),
-
-        el('div', { class: 'card-foot' }, [
-            el('span', { class: 'timestamp', text: `Updated ${formatDate(item.updated_at)}` }),
-            el('div', { class: 'card-buttons' }, [
-                el('button', {
-                    type: 'button',
-                    class: `btn btn-sm btn-test${item.last_check_ok === true ? ' is-ok' : ''}`,
-                    dataset: { state: item.last_check_ok === true ? 'ok' : (item.last_check_ok === false ? 'fail' : '') },
-                    onclick: () => testKey(item),
-                }, ['Test']),
-                el('button', {
-                    type: 'button',
-                    class: 'btn btn-sm',
-                    onclick: () => openKeyDialog(item),
-                }, ['Edit']),
-                el('button', {
-                    type: 'button',
-                    class: 'btn btn-sm',
-                    onclick: () => confirmDelete(item),
-                }, ['Delete']),
             ]),
         ]),
-    ]);
-
-    return card;
+    );
 }
 
-/**
- * Status line for the most recent connectivity check.
- *
- * A live result kept in memory (this session) takes priority over the
- * persisted one, so pressing Test updates the card immediately without
- * waiting for the Realtime round-trip.
- */
-function renderCheckResult(item) {
-    const live = state.checks.get(item.id);
-    const ok = live ? live.state === 'ok' : item.last_check_ok;
-    const pending = live?.state === 'pending';
-    const message = live ? live.message : item.last_check_message;
-    const checkedAt = live ? live.at : item.last_check_at;
-    const status = live ? live.status : item.last_check_status;
+/* ==================================================================== *
+ * Rendering — overview
+ * ==================================================================== */
+function computeSummary() {
+    const total = state.keys.length;
+    const verified = state.keys.filter((item) => item.last_check_ok === true).length;
+    const failed = state.keys.filter((item) => item.last_check_ok === false).length;
+    const untested = total - verified - failed;
+    return { total, verified, failed, untested };
+}
 
-    if (!pending && !checkedAt && !message) return null;
-
-    const variant = pending ? 'check-result--pending' : (ok ? 'check-result--ok' : 'check-result--fail');
-    const icon = pending ? '⟳' : (ok ? '✓' : '✕');
-
-    const metaParts = [];
-    if (status) metaParts.push(`HTTP ${status}`);
-    if (checkedAt) metaParts.push(`checked ${formatDate(checkedAt)}`);
-    if (item.api_base_url) metaParts.push('probe endpoint varies by provider');
-    else metaParts.push(`probe ${TEST_PROBE_PATH} on the provider default`);
-
-    return el('div', { class: `check-result ${variant}` }, [
-        el('span', { class: 'check-icon', text: icon, 'aria-hidden': 'true' }),
-        el('span', {}, [
-            el('span', { text: message || 'Checking…' }),
-            el('span', {
-                class: `check-meta${pending ? '' : (ok ? ' check-meta--ok' : ' check-meta--fail')}`,
-                text: metaParts.join(' · '),
-            }),
+function statCard({ glyph, tone, label, value, note }) {
+    return node('div', { class: 'stat' }, [
+        node('div', { class: 'stat__top' }, [
+            node('span', { class: `stat__icon${tone ? ` stat__icon--${tone}` : ''}` }, [icon(glyph)]),
+            node('span', { class: 'stat__label', text: label }),
         ]),
+        node('span', { class: 'stat__value', text: String(value) }),
+        node('span', { class: 'stat__note', text: note }),
     ]);
 }
 
-/* ------------------------------------------------------------------ *
- * Connectivity check (Test button)
- * ------------------------------------------------------------------ */
-/**
- * Ask the server-side proxy to verify the key against its provider.
- *
- * Only the key's id is sent. The function decrypts the key inside the
- * database, checks ownership through RLS, and makes the provider call
- * server-side — so the plaintext key never travels to a provider from the
- * browser, never appears in a URL, and is never logged.
- */
-async function testKey(item) {
-    if (state.checks.get(item.id)?.state === 'pending') return;
+function renderOverview() {
+    const summary = computeSummary();
 
-    state.checks.set(item.id, { state: 'pending', message: 'Contacting the provider…' });
-    render();
+    el.stats.replaceChildren(
+        statCard({
+            glyph: 'i-key',
+            tone: 'brand',
+            label: 'Keys stored',
+            value: summary.total,
+            note: summary.total === 1 ? 'One credential in the vault' : 'All encrypted at rest',
+        }),
+        statCard({
+            glyph: 'i-shield-check',
+            tone: 'ok',
+            label: 'Verified',
+            value: summary.verified,
+            note: 'Passed a live provider check',
+        }),
+        statCard({
+            glyph: 'i-shield-alert',
+            tone: summary.failed > 0 ? 'warn' : undefined,
+            label: 'Needs attention',
+            value: summary.failed,
+            note: summary.failed === 0 ? 'Nothing flagged' : 'Review the validation messages',
+        }),
+        statCard({
+            glyph: 'i-clock',
+            label: 'Untested',
+            value: summary.untested,
+            note: 'Run a check to confirm these',
+        }),
+    );
 
-    try {
-        const { data, error } = await supabase.functions.invoke(TEST_FUNCTION_NAME, {
-            body: { key_id: item.id, path: TEST_PROBE_PATH },
-        });
+    /* -- Provider breakdown -- */
+    if (summary.total === 0) {
+        el.providerBreakdown.replaceChildren(
+            node('p', { class: 'breakdown__empty', text: 'Add a key to see how they are distributed.' }),
+        );
+    } else {
+        const tally = new Map();
+        for (const item of state.keys) tally.set(item.provider, (tally.get(item.provider) ?? 0) + 1);
 
-        if (error) {
-            // Non-2xx responses carry the function's JSON payload.
-            let detail = 'Could not run the check.';
-            try {
-                const payload = await error.context?.json?.();
-                if (payload?.error) detail = payload.error;
-                if (payload?.hint) detail += ` ${payload.hint}`;
-            } catch { /* keep the generic message */ }
-
-            if (error.context?.status === 401) {
-                detail = 'Your session expired. Please log in again.';
-            }
-            throw new Error(detail);
-        }
-
-        const ok = Boolean(data?.ok);
-        state.checks.set(item.id, {
-            state: ok ? 'ok' : 'fail',
-            message: data?.message || (ok ? 'Key is valid.' : 'The check failed.'),
-            status: data?.status ?? null,
-            at: data?.checked_at || new Date().toISOString(),
-        });
-
-        toast(ok ? 'Key is working.' : 'The key did not validate.', ok ? 'success' : 'error');
-    } catch (error) {
-        state.checks.set(item.id, {
-            state: 'fail',
-            message: friendlyError(error),
-            status: null,
-            at: new Date().toISOString(),
-        });
-        toast('Check failed.', 'error');
+        const ordered = [...tally.entries()].sort((a, b) => b[1] - a[1]);
+        el.providerBreakdown.replaceChildren(
+            node('div', { class: 'breakdown' }, ordered.map(([name, count]) => {
+                const percent = Math.round((count / summary.total) * 100);
+                return node('div', { class: 'breakdown__row', dataset: { provider: name } }, [
+                    node('div', { class: 'breakdown__head' }, [
+                        providerChip(name),
+                        node('span', {
+                            class: 'breakdown__count',
+                            text: `${count} · ${percent}%`,
+                        }),
+                    ]),
+                    node('div', {
+                        class: 'meter',
+                        role: 'img',
+                        'aria-label': `${name}: ${count} of ${summary.total} keys`,
+                    }, [
+                        node('span', { class: 'meter__fill', style: `inline-size:${percent}%` }),
+                    ]),
+                ]);
+            })),
+        );
     }
 
-    render();
-    await loadKeys();
+    /* -- Recent validation -- */
+    const checked = state.keys
+        .filter((item) => item.last_check_at)
+        .sort((a, b) => new Date(b.last_check_at) - new Date(a.last_check_at))
+        .slice(0, 5);
+
+    if (checked.length === 0) {
+        el.activity.replaceChildren(
+            node('p', { class: 'activity__empty', text: 'No validations yet. Use the validate action on any key.' }),
+        );
+        return;
+    }
+
+    el.activity.replaceChildren(
+        node('div', { class: 'activity' }, checked.map((item) => {
+            const ok = item.last_check_ok === true;
+            return node('div', { class: 'activity__row' }, [
+                node('span', { class: `activity__glyph${ok ? ' activity__glyph--ok' : ' activity__glyph--fail'}` }, [
+                    icon(ok ? 'i-check-circle' : 'i-x-circle'),
+                ]),
+                node('span', { class: 'activity__main' }, [
+                    node('span', { class: 'activity__name', text: item.label || `${item.provider} key` }),
+                    node('span', {
+                        class: 'activity__meta',
+                        text: item.last_check_message || (ok ? 'Validated successfully.' : 'Validation failed.'),
+                    }),
+                ]),
+                node('span', { class: 'activity__tail' }, [
+                    item.last_check_status
+                        ? node('span', { class: 'pill pill--neutral' }, [node('span', { class: 'pill__text', text: `HTTP ${item.last_check_status}` })])
+                        : null,
+                    node('span', { class: 'activity__time', text: formatRelative(item.last_check_at) }),
+                ]),
+            ]);
+        })),
+    );
 }
 
-/* ------------------------------------------------------------------ *
+/* ==================================================================== *
+ * Master render
+ * ==================================================================== */
+function renderAll() {
+    renderKeys();
+    renderOverview();
+}
+
+/* ==================================================================== *
  * Reveal / hide
- * ------------------------------------------------------------------ */
-function clearRevealTimers(id) {
+ * ==================================================================== */
+function clearRevealTimer(id) {
     const timer = state.revealTimers.get(id);
     if (timer) {
         clearTimeout(timer);
@@ -614,239 +1015,412 @@ function clearRevealTimers(id) {
     }
 }
 
-function clearRevealedExcept(keepIds) {
-    const keep = new Set(keepIds);
+function keepRevealedOnly(ids) {
+    const keep = new Set(ids);
     for (const id of [...state.revealed.keys()]) {
         if (!keep.has(id)) {
             state.revealed.delete(id);
-            clearRevealTimers(id);
+            clearRevealTimer(id);
         }
     }
 }
 
 function clearRevealed() {
-    for (const id of state.revealTimers.keys()) clearTimeout(state.revealTimers.get(id));
+    for (const timer of state.revealTimers.values()) clearTimeout(timer);
     state.revealed.clear();
     state.revealTimers.clear();
 }
 
 function hideKey(id) {
     state.revealed.delete(id);
-    clearRevealTimers(id);
-    render();
+    clearRevealTimer(id);
+    renderAll();
 }
 
 async function revealKey(id) {
-    if (state.revealed.has(id)) return hideKey(id);
+    if (state.revealed.has(id)) {
+        hideKey(id);
+        return;
+    }
 
-    // Decrypt one row, server-side, with ownership re-checked in Postgres.
+    // Single-row decrypt, ownership re-checked inside Postgres.
     const { data, error } = await supabase.rpc('get_api_key_secret', { p_id: id });
-    if (error) return toast(friendlyError(error), 'error');
-    if (typeof data !== 'string' || !data) return toast('Could not retrieve that key.', 'error');
+    if (error) {
+        toast(friendlyError(error), 'error');
+        return;
+    }
+    if (typeof data !== 'string' || !data) {
+        toast('That key could not be retrieved.', 'error');
+        return;
+    }
 
     state.revealed.set(id, data);
-    render();
+    renderAll();
 
-    // Auto-hide so a decrypted key never lingers on screen.
-    clearRevealTimers(id);
+    // Auto-hide so plaintext never lingers on screen.
+    clearRevealTimer(id);
     state.revealTimers.set(id, setTimeout(() => {
         if (state.revealed.has(id)) {
             state.revealed.delete(id);
             state.revealTimers.delete(id);
-            render();
+            renderAll();
         }
     }, REVEAL_TIMEOUT_MS));
 }
 
 async function copyKey(item, button) {
-    const plaintext = state.revealed.get(item.id);
-    let value = plaintext;
+    let value = state.revealed.get(item.id);
 
     if (!value) {
         const { data, error } = await supabase.rpc('get_api_key_secret', { p_id: item.id });
-        if (error) return toast(friendlyError(error), 'error');
+        if (error) {
+            toast(friendlyError(error), 'error');
+            return;
+        }
         value = data;
     }
-    if (!value) return toast('Could not retrieve that key.', 'error');
+    if (!value) {
+        toast('That key could not be retrieved.', 'error');
+        return;
+    }
 
-    const ok = await copyText(value);
-    if (!ok) return toast('Copy failed — use Reveal to select it manually.', 'error');
+    if (!(await copyText(value))) {
+        toast('Copying is blocked here. Reveal the key and copy it manually.', 'error');
+        return;
+    }
 
-    const original = button.textContent;
-    button.textContent = '✓';
-    setTimeout(() => { button.textContent = original; }, 1200);
-    toast('Key copied to clipboard.', 'success');
+    button.dataset.copied = 'true';
+    button.replaceChildren(icon('i-check'));
+    setTimeout(() => {
+        button.dataset.copied = 'false';
+        button.replaceChildren(icon('i-copy'));
+    }, 1400);
+
+    toast('Key copied to the clipboard.', 'ok');
 }
 
-/* ------------------------------------------------------------------ *
+/* ==================================================================== *
+ * Live provider validation
+ * ==================================================================== */
+async function testKey(item) {
+    if (state.checks.get(item.id)?.state === 'pending') return;
+
+    state.checks.set(item.id, { state: 'pending', message: 'Contacting the provider…' });
+    renderAll();
+
+    try {
+        // Only the id crosses the boundary. The key is decrypted server-side.
+        const { data, error } = await supabase.functions.invoke(TEST_FUNCTION_NAME, {
+            body: { key_id: item.id, path: TEST_PROBE_PATH },
+        });
+
+        if (error) {
+            let detail = 'The validation could not be completed.';
+            try {
+                const payload = await error.context?.json?.();
+                if (payload?.error) detail = payload.error;
+                if (payload?.hint) detail = `${detail} ${payload.hint}`;
+            } catch { /* keep the generic message */ }
+
+            if (error.context?.status === 401) detail = 'Your session expired. Log in again.';
+            throw new Error(detail);
+        }
+
+        const ok = Boolean(data?.ok);
+        state.checks.set(item.id, {
+            state: ok ? 'ok' : 'fail',
+            message: data?.message || (ok ? 'The key is valid.' : 'The key did not validate.'),
+            status: data?.status ?? null,
+            at: data?.checked_at || new Date().toISOString(),
+        });
+
+        toast(ok ? 'Key validated against its provider.' : 'The key did not validate.', ok ? 'ok' : 'error');
+    } catch (error) {
+        state.checks.set(item.id, {
+            state: 'fail',
+            message: friendlyError(error),
+            status: null,
+            at: new Date().toISOString(),
+        });
+        toast('Validation failed.', 'error');
+    }
+
+    renderAll();
+    await loadKeys();
+}
+
+/* ==================================================================== *
  * Add / edit dialog
- * ------------------------------------------------------------------ */
+ * ==================================================================== */
 function openKeyDialog(item = null) {
     state.editingId = item?.id ?? null;
-    ui.dialogTitle.textContent = item ? 'Edit API key' : 'Add API key';
-    ui.keyOptional.hidden = !item;
-    ui.fApiKey.required = !item;
-    ui.fApiKey.value = '';
-    ui.fApiKey.type = 'password';
-    ui.fApiKey.placeholder = item ? 'Unchanged' : 'sk-…';
-    ui.fApiKey.setAttribute('aria-invalid', 'false');
-    ui.fProvider.value = item?.provider ?? PROVIDERS[0];
-    ui.fLabel.value = item?.label ?? '';
-    ui.fDescription.value = item?.description ?? '';
-    ui.fBaseUrl.value = item?.api_base_url ?? '';
-    ui.dialog.showModal();
-    (item ? ui.fLabel : ui.fApiKey).focus();
+    const isEdit = Boolean(item);
+
+    el.keyDialogTitle.textContent = isEdit ? 'Edit API key' : 'Add an API key';
+    el.keyDialogSub.textContent = isEdit
+        ? 'Metadata changes apply immediately. Leave the key blank to keep it.'
+        : 'Encrypted on submit, before it reaches the database.';
+    el.dialogSave.querySelector('.btn__label').textContent = isEdit ? 'Save changes' : 'Save key';
+
+    el.keyOptional.hidden = !isEdit;
+    el.fApiKey.required = !isEdit;
+    el.fApiKey.value = '';
+    el.fApiKey.type = 'password';
+    el.fApiKey.placeholder = isEdit ? 'Unchanged' : 'sk-...';
+    el.fApiKey.setAttribute('aria-invalid', 'false');
+    el.fProvider.value = item?.provider ?? PROVIDERS[0];
+    el.fLabel.value = item?.label ?? '';
+    el.fDescription.value = item?.description ?? '';
+    el.fBaseUrl.value = item?.api_base_url ?? '';
+    clearFormError(el.keyError);
+
+    el.keyDialog.showModal();
+    (isEdit ? el.fLabel : el.fApiKey).focus();
 }
 
 function closeKeyDialog() {
-    ui.dialog.close();
+    if (el.keyDialog.open) el.keyDialog.close();
     state.editingId = null;
+    el.fApiKey.value = '';
 }
 
-ui.addBtn.addEventListener('click', () => openKeyDialog());
-ui.emptyAddBtn.addEventListener('click', () => openKeyDialog());
-ui.dialogClose.addEventListener('click', closeKeyDialog);
-ui.dialogCancel.addEventListener('click', closeKeyDialog);
-ui.dialog.addEventListener('close', () => { state.editingId = null; });
+function initKeyDialog() {
+    el.keyForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        clearFormError(el.keyError);
 
-ui.toggleKeyVisibility.addEventListener('click', () => {
-    const hidden = ui.fApiKey.type === 'password';
-    ui.fApiKey.type = hidden ? 'text' : 'password';
-    ui.toggleKeyVisibility.setAttribute('aria-label', hidden ? 'Hide typed key' : 'Show typed key');
-    ui.fApiKey.focus();
-});
+        const provider = el.fProvider.value;
+        const apiKey = el.fApiKey.value.trim();
+        const label = el.fLabel.value.trim();
+        const description = el.fDescription.value.trim();
+        const baseUrl = el.fBaseUrl.value.trim();
+        const isEdit = Boolean(state.editingId);
 
-ui.keyForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
+        if (!isEdit && !apiKey) {
+            el.fApiKey.setAttribute('aria-invalid', 'true');
+            el.fApiKey.focus();
+            showFormError(el.keyError, 'Enter the API key you want to store.');
+            return;
+        }
 
-    const provider = ui.fProvider.value;
-    const rawKey = ui.fApiKey.value.trim();
-    const label = ui.fLabel.value.trim();
-    const description = ui.fDescription.value.trim();
-    const baseUrl = ui.fBaseUrl.value.trim();
-    const isEdit = Boolean(state.editingId);
+        if (baseUrl && !/^https?:\/\//i.test(baseUrl)) {
+            el.fBaseUrl.setAttribute('aria-invalid', 'true');
+            el.fBaseUrl.focus();
+            showFormError(el.keyError, 'The base URL must begin with http:// or https://');
+            return;
+        }
 
-    if (!isEdit && !rawKey) {
-        ui.fApiKey.setAttribute('aria-invalid', 'true');
-        return toast('Please enter the API key.', 'error');
-    }
-    if (baseUrl && !/^https?:\/\//i.test(baseUrl)) {
-        return toast('Base URL must start with http:// or https://', 'error');
-    }
+        el.dialogSave.disabled = true;
+        el.dialogSave.dataset.busy = 'true';
 
-    const saveBtn = document.getElementById('dialog-save');
-    saveBtn.disabled = true;
+        // Mutations go through SECURITY DEFINER RPCs — never direct table writes.
+        const { error } = isEdit
+            ? await supabase.rpc('update_api_key', {
+                p_id: state.editingId,
+                p_provider: provider,
+                p_label: label || null,
+                p_description: description || null,
+                p_api_base_url: baseUrl || null,
+                p_api_key: apiKey || null,   // null preserves the stored ciphertext
+            })
+            : await supabase.rpc('create_api_key', {
+                p_provider: provider,
+                p_api_key: apiKey,
+                p_label: label || null,
+                p_description: description || null,
+                p_api_base_url: baseUrl || null,
+            });
 
-    // Mutations go through SECURITY DEFINER RPCs, never direct table writes.
-    const { error } = isEdit
-        ? await supabase.rpc('update_api_key', {
-            p_id: state.editingId,
-            p_provider: provider,
-            p_label: label || null,
-            p_description: description || null,
-            p_api_base_url: baseUrl || null,
-            p_api_key: rawKey || null,   // null keeps the existing encrypted value
-        })
-        : await supabase.rpc('create_api_key', {
-            p_provider: provider,
-            p_api_key: rawKey,
-            p_label: label || null,
-            p_description: description || null,
-            p_api_base_url: baseUrl || null,
-        });
+        el.dialogSave.disabled = false;
+        delete el.dialogSave.dataset.busy;
 
-    saveBtn.disabled = false;
+        if (error) {
+            showFormError(el.keyError, friendlyError(error));
+            return;
+        }
 
-    if (error) return toast(friendlyError(error), 'error');
-
-    ui.fApiKey.value = '';           // never keep plaintext in the DOM
-    const wasEdit = isEdit;
-    closeKeyDialog();
-    toast(wasEdit ? 'Key updated.' : 'Key added and encrypted.', 'success');
-    await loadKeys();
-});
-
-/* ------------------------------------------------------------------ *
- * Delete
- * ------------------------------------------------------------------ */
-function confirmDelete(item) {
-    state.pendingDeleteId = item.id;
-    ui.confirmText.textContent =
-        `“${item.label || item.provider}” will be permanently removed from your account.`;
-    ui.confirmDialog.showModal();
-}
-
-ui.confirmCancel.addEventListener('click', () => {
-    state.pendingDeleteId = null;
-    ui.confirmDialog.close();
-});
-ui.confirmDialog.addEventListener('close', () => { state.pendingDeleteId = null; });
-
-ui.confirmOk.addEventListener('click', async () => {
-    const id = state.pendingDeleteId;
-    if (!id) return;
-    ui.confirmOk.disabled = true;
-
-    const { error } = await supabase.rpc('delete_api_key', { p_id: id });
-    ui.confirmOk.disabled = false;
-    ui.confirmDialog.close();
-
-    if (error) return toast(friendlyError(error), 'error');
-    hideKey(id);
-    toast('Key deleted.', 'success');
-    await loadKeys();
-});
-
-/* ------------------------------------------------------------------ *
- * Search
- * ------------------------------------------------------------------ */
-let searchTimer = null;
-ui.search.addEventListener('input', () => {
-    const value = ui.search.value;
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-        state.query = value;
-        render();
-    }, 120);
-});
-
-/* ------------------------------------------------------------------ *
- * Global wiring
- * ------------------------------------------------------------------ */
-ui.fProvider.replaceChildren(
-    ...PROVIDERS.map((name) => el('option', { value: name, text: name })),
-);
-
-// Hide decrypted values when the tab is backgrounded.
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden && state.revealed.size > 0) {
-        clearRevealed();
-        render();
-    }
-});
-
-// Close dialogs on backdrop click.
-for (const dialog of [ui.dialog, ui.confirmDialog]) {
-    dialog.addEventListener('click', (event) => {
-        if (event.target === dialog) dialog.close();
+        el.fApiKey.value = '';   // never leave plaintext in the DOM
+        closeKeyDialog();
+        toast(isEdit ? 'Key updated.' : 'Key added and encrypted.', 'ok');
+        await loadKeys();
     });
 }
 
-// Keep the UI in sync if the session expires or the token is refreshed.
-let refreshTimer = null;
-supabase.auth.onAuthStateChange((event) => {
-    if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') {
-        clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => { if (state.user) loadKeys(); }, 0);
-    }
-});
+/* ==================================================================== *
+ * Delete
+ * ==================================================================== */
+function confirmDelete(item) {
+    state.pendingDeleteId = item.id;
+    el.confirmText.textContent =
+        `“${item.label || item.provider}” will be removed from your vault.`;
+    el.confirmDialog.showModal();
+}
 
-(async function bootstrap() {
+function initConfirmDialog() {
+    el.confirmOk.addEventListener('click', async () => {
+        const id = state.pendingDeleteId;
+        if (!id) return;
+
+        el.confirmOk.disabled = true;
+        el.confirmOk.dataset.busy = 'true';
+
+        const { error } = await supabase.rpc('delete_api_key', { p_id: id });
+
+        el.confirmOk.disabled = false;
+        delete el.confirmOk.dataset.busy;
+        el.confirmDialog.close();
+        state.pendingDeleteId = null;
+
+        if (error) {
+            toast(friendlyError(error), 'error');
+            return;
+        }
+
+        hideKey(id);
+        toast('Key deleted.', 'ok');
+        await loadKeys();
+    });
+}
+
+/* ==================================================================== *
+ * Toolbar wiring
+ * ==================================================================== */
+let searchTimer = null;
+
+function initToolbar() {
+    el.search.addEventListener('input', () => {
+        const value = el.search.value;
+        el.searchClear.hidden = value.length === 0;
+        el.searchKbd.toggleAttribute('hidden', value.length > 0);
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            state.query = value;
+            renderKeys();
+        }, SEARCH_DEBOUNCE_MS);
+    });
+
+    el.searchClear.addEventListener('click', () => {
+        el.search.value = '';
+        el.searchClear.hidden = true;
+        el.searchKbd.hidden = false;
+        state.query = '';
+        renderKeys();
+        el.search.focus();
+    });
+
+    el.sort.addEventListener('change', () => {
+        state.sort = el.sort.value;
+        renderKeys();
+    });
+
+    // Ctrl/Cmd+K focuses search from anywhere.
+    document.addEventListener('keydown', (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+            event.preventDefault();
+            if (window.location.hash !== '#keys') {
+                window.location.hash = '#keys';
+                setTimeout(() => el.search.focus(), 30);
+            } else {
+                el.search.focus();
+                el.search.select();
+            }
+        }
+    });
+
+    // Match the shortcut hint to the platform.
+    if (/Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)) {
+        el.searchKbd.textContent = '⌘K';
+    }
+
+    // Hide plaintext the moment the tab loses visibility.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && state.revealed.size > 0) {
+            clearRevealed();
+            renderAll();
+        }
+    });
+}
+
+/* ==================================================================== *
+ * Global click delegation for data-action buttons
+ * ==================================================================== */
+function initActions() {
+    document.addEventListener('click', (event) => {
+        const trigger = event.target.closest('[data-action]');
+        if (!trigger) return;
+
+        switch (trigger.dataset.action) {
+            case 'add':
+                openKeyDialog();
+                break;
+            case 'logout':
+                signOut();
+                break;
+            case 'dialog-close':
+                closeKeyDialog();
+                break;
+            case 'confirm-cancel':
+                el.confirmDialog.close();
+                state.pendingDeleteId = null;
+                break;
+            case 'toggle-secret': {
+                const revealed = el.fApiKey.type === 'text';
+                el.fApiKey.type = revealed ? 'password' : 'text';
+                trigger.replaceChildren(icon(revealed ? 'i-eye' : 'i-eye-off'));
+                trigger.setAttribute('aria-label', revealed ? 'Show the key as you type' : 'Hide the key');
+                el.fApiKey.focus();
+                break;
+            }
+            default:
+                break;
+        }
+    });
+
+    // Clicking the backdrop dismisses a dialog.
+    for (const dialog of [el.keyDialog, el.confirmDialog]) {
+        dialog.addEventListener('click', (event) => {
+            if (event.target === dialog) dialog.close();
+        });
+    }
+
+    el.keyDialog.addEventListener('close', () => {
+        state.editingId = null;
+    });
+
+    el.confirmDialog.addEventListener('close', () => {
+        state.pendingDeleteId = null;
+    });
+
+    // Clear the invalid flag as soon as the person corrects the field.
+    for (const input of [el.fApiKey, el.fBaseUrl]) {
+        input.addEventListener('input', () => input.setAttribute('aria-invalid', 'false'));
+    }
+}
+
+/* ==================================================================== *
+ * Bootstrap
+ * ==================================================================== */
+async function main() {
+    const syncFromHash = initRouter();
+
+    initTheme();
+    initAuth();
+    initToolbar();
+    initKeyDialog();
+    initConfirmDialog();
+    initActions();
+
+    el.fProvider.replaceChildren(...PROVIDERS.map((name) => node('option', { value: name, text: name })));
+
     const { data, error } = await supabase.auth.getSession();
-    if (error) {
-        showAuth();
+    if (error || !data?.session?.user) {
+        enterAuthScreen();
+        syncFromHash();
         return;
     }
-    if (data?.session?.user) await showApp(data.session.user);
-    else showAuth();
-})();
+
+    await enterApp(data.session.user);
+    syncFromHash();
+}
+
+main();

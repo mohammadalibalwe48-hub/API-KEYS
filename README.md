@@ -20,7 +20,59 @@ Security**, and **decrypted only on demand**, in memory, for a few seconds.
 | **Fields** | Provider, API key, optional label, optional description, optional API Base URL |
 | **Masking** | Keys show as `••••••••••••••••XXXX` by default (mask + last 4) |
 | **Sync** | Supabase Realtime pushes changes to every signed-in device instantly |
-| **Design** | Mobile-first, responsive (1 / 2 / auto-fill grid), light + dark mode, 44px touch targets |
+| **Design** | A unified design system — see [Interface](#interface) |
+
+---
+
+## Interface
+
+The UI is built on one design system rather than per-page styling.
+
+**Tokens.** Every colour is authored in OKLCH and resolved through CSS
+`light-dark()`, so light and dark are two expressions of the same palette
+instead of two hand-tuned themes. Each token is written with a plain fallback
+first, so a browser without `light-dark()` still renders a coherent light theme.
+Type, spacing (4px rhythm), radii, depth and motion are all tokenised in the
+`tokens` layer; components never hard-code a value.
+
+**Colour system.** A neutral ramp (`--ink` → `--ink-faint`), a single accent,
+and three semantic families (ok / warn / danger), each with base, quiet and line
+variants for composed surfaces. The four providers get evenly spaced
+categorical hues, applied through a `--provider-hue` custom property so a
+provider's identity carries into dots, filter pills and dashboard meters.
+
+**Iconography.** Zero emoji. A 29-symbol inline SVG sprite carries its own
+stroke attributes so geometry survives any cascade context. Icons are referenced
+by `<use href="#i-…">` in markup and by a small `icon()` helper in JS.
+
+**Layout.** Two shells that swap at 1024px: a mobile-first stack with a bottom
+tab bar, and a desktop layout with a sticky sidebar rail. Navigation is
+hash-routed (`#overview`, `#keys`, `#account`), so refresh, back and forward all
+behave, and the active view is reflected in `aria-current`.
+
+**Views.** An Overview with summary metrics, a provider distribution, the
+security posture, and recent validation results. An API keys view that renders a
+real `<table>` at ≥900px and a card stack below it — both from the same data, so
+desktop gets density and mobile gets legibility. An Account view for identity,
+theme choice and session control.
+
+**States.** Every interactive element defines hover, active, focus-visible,
+disabled and busy states. Buttons carry a spinner via `data-busy`, async actions
+show inline progress, empty and loading states are explicit, and errors appear
+in context rather than only as a toast.
+
+**Accessibility.** A skip link, a screen-reader-only utility, labelled controls,
+`aria-live` regions for result and validation announcements, `aria-pressed` on
+toggles, focus moved to the view heading on navigation, dialog focus trapping via
+native `<dialog>`, full keyboard operation including `Ctrl`/`Cmd`+`K` to search,
+and a `prefers-reduced-motion` guard that collapses all transitions.
+
+**Theme.** System by default, overridable per device from the app bar or Account
+view, applied before first paint by a tiny inline script so there is no flash.
+
+**Typography.** The system UI stack (Inter when present) for interface text, a
+monospace stack for keys and URLs, `tabular-nums` wherever figures align, and
+`text-wrap: balance` on the auth headline.
 
 ---
 
@@ -193,21 +245,21 @@ transactions, so no test data remains):
 | Test | Result |
 |---|---|
 | Encrypt → decrypt round-trip | `sk-test-1234567890` recovered exactly; 84–86 byte ciphertext |
-| User A creates and reveals own key | ✅ succeeded, `rows_visible_to_a = 1` |
-| User B reads user A's rows | ✅ `rows_visible_to_b = 0` |
-| User B calls `get_api_key_secret` on A's key | ✅ blocked — `API key not found` |
-| Anonymous (logged out) SELECT | ✅ blocked — `permission denied for table api_keys` |
-| Anonymous RPC call | ✅ blocked — `permission denied for function create_api_key` |
+| User A creates and reveals own key | passed — `rows_visible_to_a = 1` |
+| User B reads user A's rows | passed — `rows_visible_to_b = 0` |
+| User B calls `get_api_key_secret` on A's key | blocked — `API key not found` |
+| Anonymous (logged out) SELECT | blocked — `permission denied for table api_keys` |
+| Anonymous RPC call | blocked — `permission denied for function create_api_key` |
 
 Connectivity-check tests against the deployed function:
 
 | Test | Result |
 |---|---|
-| Invalid key vs. a real provider (`api.openai.com`) | ✅ reached provider, surfaced its own `401` message |
-| Plaintext key echoed back in the response | ✅ `leaked_key_in_response = False` |
-| Private target (`https://127.0.0.1/v1`) | ✅ refused — "https required, private addresses blocked" |
-| Custom key with no base URL | ✅ clear error plus an actionable hint |
-| Unknown / non-owned key id | ✅ `404 API key not found` (RLS-scoped) |
+| Invalid key vs. a real provider (`api.openai.com`) | reached provider, surfaced its own `401` message |
+| Plaintext key echoed back in the response | `leaked_key_in_response = False` |
+| Private target (`https://127.0.0.1/v1`) | refused — "https required, private addresses blocked" |
+| Custom key with no base URL | clear error plus an actionable hint |
+| Unknown / non-owned key id | `404 API key not found` (RLS-scoped) |
 
 ---
 
@@ -261,10 +313,10 @@ keys without decrypting anything. `key_last4` powers the masked display.
    description, and base URL.
 4. The key is encrypted server-side and appears masked as
    `••••••••••••••••XXXX`.
-5. **👁 Reveal** decrypts it for 30 seconds. **⧉ Copy** copies it to the
-   clipboard without displaying it. **Test** checks it against the provider.
-   **Edit** changes metadata and optionally rotates the key. **Delete** removes
-   it permanently. A green/red dot on **Test** shows the last known verdict.
+5. **Reveal** decrypts it for 30 seconds. **Copy** copies it to the clipboard
+   without displaying it. **Validate** checks it against the provider. **Edit**
+   changes metadata and optionally rotates the key. **Delete** removes it
+   permanently. The validation control and status pill show the last verdict.
 6. Open the app on another device with the same account — keys appear there,
    and edits propagate live via Realtime.
 
