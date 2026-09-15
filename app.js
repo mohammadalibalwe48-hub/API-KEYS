@@ -25,6 +25,10 @@ import {
     REVEAL_TIMEOUT_MS,
     TEST_FUNCTION_NAME,
     TEST_PROBE_PATH,
+    PROVIDER_BASE_URLS,
+    PROVIDER_URLS_ARE_PLACEHOLDERS,
+    PROXY_FUNCTION_NAME,
+    USAGE_PAGE_SIZE,
 } from './config.js';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
@@ -45,10 +49,21 @@ const KEY_COLUMNS = [
     'created_at', 'updated_at',
 ].join(', ');
 
+const TOKEN_COLUMNS = [
+    'id', 'key_id', 'name', 'token_hint', 'last_used_at', 'revoked_at', 'created_at',
+].join(', ');
+
+const USAGE_COLUMNS = [
+    'id', 'key_id', 'provider', 'model', 'path', 'status_code', 'ok',
+    'prompt_tokens', 'completion_tokens', 'total_tokens',
+    'cost_usd', 'latency_ms', 'error', 'created_at',
+].join(', ');
+
 const VIEWS = {
     overview: { title: 'Overview', subtitle: 'A summary of every key you hold.' },
     keys: { title: 'API keys', subtitle: 'Stored, encrypted and validated on demand.' },
-    account: { title: 'Account', subtitle: 'Your identity and workspace preferences.' },
+    usage: { title: 'Usage', subtitle: 'Requests routed through the vault, and what they cost.' },
+    account: { title: 'Account', subtitle: 'Your identity, proxy tokens and workspace preferences.' },
 };
 
 /* ==================================================================== *
@@ -86,10 +101,31 @@ const el = {
     // Views
     viewOverview: $('view-overview'),
     viewKeys: $('view-keys'),
+    viewUsage: $('view-usage'),
     viewAccount: $('view-account'),
     stats: $('stats'),
     providerBreakdown: $('provider-breakdown'),
     activity: $('activity'),
+
+    // Usage
+    usageStats: $('usage-stats'),
+    proxyEndpoint: $('proxy-endpoint'),
+    usageByKey: $('usage-by-key'),
+    usageByModel: $('usage-by-model'),
+    usageTable: $('usage-table'),
+    usageTableBody: $('usage-table-body'),
+    usageEmpty: $('usage-empty'),
+
+    // Proxy tokens
+    tokenList: $('token-list'),
+    tokenDialog: $('token-dialog'),
+    tokenForm: $('token-form'),
+    tokenCreate: $('token-create'),
+    tokenKey: $('t-key'),
+    tokenName: $('t-name'),
+    tokenReveal: $('token-reveal'),
+    tokenValue: $('token-value'),
+    tokenError: $('token-error'),
 
     // Keys
     search: $('search'),
@@ -139,6 +175,11 @@ const state = {
     pendingDeleteId: null,
     busyIds: new Set(),
     channel: null,
+    providerUrls: new Map(),  // provider -> { base_url, probe_path }, per user
+    tokens: [],
+    usage: [],
+    usageChannel: null,
+    newTokenValue: null,      // held in memory only, cleared on dialog close
 };
 
 /* ==================================================================== *
@@ -305,6 +346,7 @@ function setView(view, { focus = false } = {}) {
     for (const [name, section] of Object.entries({
         overview: el.viewOverview,
         keys: el.viewKeys,
+        usage: el.viewUsage,
         account: el.viewAccount,
     })) {
         section.hidden = name !== next;
@@ -481,7 +523,8 @@ async function enterApp(user) {
     state.sort = 'updated';
 
     renderSkeleton();
-    await loadKeys();
+    renderProxyEndpoint();
+    await Promise.all([loadKeys(), loadProviderUrls(), loadTokens(), loadUsage()]);
     subscribeRealtime();
 }
 
@@ -525,6 +568,81 @@ async function loadKeys() {
 
     state.keys = data ?? [];
     renderAll();
+}
+
+/**
+ * Per-user provider defaults, learned from keys you have already saved.
+ * Used to pre-fill the base URL so you never type the same host twice.
+ */
+async function loadProviderUrls() {
+    const { data, error } = await supabase
+        .from('user_provider_urls')
+        .select('provider, base_url, probe_path');
+
+    if (error) return;   // non-fatal: pre-fill simply falls back to config
+
+    state.providerUrls.clear();
+    for (const row of data ?? []) {
+        state.providerUrls.set(row.provider, {
+            base_url: row.base_url,
+            probe_path: row.probe_path,
+        });
+    }
+}
+
+async function loadTokens() {
+    const { data, error } = await supabase
+        .from('proxy_tokens')
+        .select(TOKEN_COLUMNS)
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        el.tokenList.replaceChildren(
+            node('p', { class: 'activity__empty', text: friendlyError(error) }),
+        );
+        return;
+    }
+
+    state.tokens = data ?? [];
+    renderTokens();
+}
+
+async function loadUsage() {
+    const { data, error } = await supabase
+        .from('usage_events')
+        .select(USAGE_COLUMNS)
+        .order('created_at', { ascending: false })
+        .limit(USAGE_PAGE_SIZE);
+
+    if (error) {
+        el.usageEmpty.hidden = false;
+        el.usageEmpty.textContent = friendlyError(error);
+        return;
+    }
+
+    state.usage = data ?? [];
+    renderUsage();
+}
+
+/**
+ * Resolve the base URL to pre-fill for a provider, in priority order:
+ *   1. a URL this user has already saved for that provider (learned)
+ *   2. a URL already used by one of their keys of that provider
+ *   3. the configured default, which is an unverified placeholder
+ */
+function resolveProviderUrl(provider) {
+    const learned = state.providerUrls.get(provider);
+    if (learned?.base_url) return { value: learned.base_url, source: 'learned' };
+
+    const existing = state.keys.find((item) => item.provider === provider && item.api_base_url);
+    if (existing) return { value: existing.api_base_url, source: 'learned' };
+
+    const fallback = PROVIDER_BASE_URLS[provider];
+    if (fallback) {
+        return { value: fallback, source: PROVIDER_URLS_ARE_PLACEHOLDERS ? 'placeholder' : 'default' };
+    }
+
+    return { value: '', source: 'none' };
 }
 
 /* ==================================================================== *
@@ -1002,6 +1120,8 @@ function renderOverview() {
 function renderAll() {
     renderKeys();
     renderOverview();
+    renderTokens();
+    renderUsage();
 }
 
 /* ==================================================================== *
@@ -1152,6 +1272,27 @@ async function testKey(item) {
 /* ==================================================================== *
  * Add / edit dialog
  * ==================================================================== */
+function applyProviderUrl(provider, { force = false } = {}) {
+    // Never clobber a URL the person has typed or one being edited.
+    if (!force && el.fBaseUrl.value.trim()) return;
+
+    const resolved = resolveProviderUrl(provider);
+    el.fBaseUrl.value = resolved.value;
+
+    const hint = el.fBaseUrl.getAttribute('aria-describedby');
+    const hintNode = hint ? document.getElementById(hint) : null;
+    if (!hintNode) return;
+
+    if (resolved.source === 'placeholder') {
+        hintNode.textContent =
+            'Pre-filled from a default that is not yet verified. Check it against the provider\'s docs — your value is remembered for next time.';
+    } else if (resolved.source === 'learned') {
+        hintNode.textContent = 'Remembered from a key you saved earlier. Used to validate the key.';
+    } else {
+        hintNode.textContent = 'Used to validate the key. Required for custom providers.';
+    }
+}
+
 function openKeyDialog(item = null) {
     state.editingId = item?.id ?? null;
     const isEdit = Boolean(item);
@@ -1174,6 +1315,10 @@ function openKeyDialog(item = null) {
     el.fBaseUrl.value = item?.api_base_url ?? '';
     clearFormError(el.keyError);
 
+    // Pre-fill the base URL for a new key, so the same host is never typed
+    // twice. An existing key keeps whatever it already has.
+    if (!isEdit) applyProviderUrl(el.fProvider.value, { force: true });
+
     el.keyDialog.showModal();
     (isEdit ? el.fLabel : el.fApiKey).focus();
 }
@@ -1182,6 +1327,342 @@ function closeKeyDialog() {
     if (el.keyDialog.open) el.keyDialog.close();
     state.editingId = null;
     el.fApiKey.value = '';
+}
+
+/* ==================================================================== *
+ * Proxy tokens
+ * ==================================================================== */
+function renderTokens() {
+    if (state.tokens.length === 0) {
+        el.tokenList.replaceChildren(
+            node('p', {
+                class: 'activity__empty',
+                text: 'No proxy tokens yet. Create one to route a client through the vault.',
+            }),
+        );
+        return;
+    }
+
+    const keyNames = new Map(state.keys.map((item) => [item.id, item.label || item.provider]));
+
+    el.tokenList.replaceChildren(
+        node('div', { class: 'tokenlist' }, state.tokens.map((token) => {
+            const revoked = Boolean(token.revoked_at);
+            const keyName = keyNames.get(token.key_id) ?? 'Deleted key';
+
+            const meta = [
+                `kv_····${token.token_hint}`,
+                keyName,
+                revoked
+                    ? `revoked ${formatRelative(token.revoked_at)}`
+                    : (token.last_used_at ? `used ${formatRelative(token.last_used_at)}` : 'never used'),
+            ];
+
+            return node('div', { class: 'tokenrow' }, [
+                node('span', { class: `tokenrow__glyph${revoked ? ' tokenrow__glyph--revoked' : ''}` }, [
+                    icon(revoked ? 'i-shield-alert' : 'i-key'),
+                ]),
+                node('span', { class: 'tokenrow__main' }, [
+                    node('span', { class: 'tokenrow__name', text: token.name || 'Unnamed token' }),
+                    node('span', { class: 'tokenrow__meta', text: meta.join('  ·  ') }),
+                ]),
+                revoked
+                    ? node('span', { class: 'pill pill--neutral' }, [node('span', { class: 'pill__text', text: 'Revoked' })])
+                    : actionButton({
+                        glyph: 'i-trash',
+                        label: `Revoke ${token.name || 'token'}`,
+                        onClick: () => revokeToken(token),
+                        danger: true,
+                    }),
+            ]);
+        })),
+    );
+}
+
+function openTokenDialog() {
+    if (state.keys.length === 0) {
+        toast('Add a key first — a token has to be bound to one.', 'error');
+        return;
+    }
+
+    el.tokenForm.reset();
+    el.tokenError.hidden = true;
+    el.tokenReveal.hidden = true;
+    state.newTokenValue = null;
+
+    el.tokenKey.replaceChildren(
+        ...state.keys.map((item) =>
+            node('option', { value: item.id, text: `${item.label || item.provider} — ${item.provider}` })),
+    );
+
+    el.tokenDialog.showModal();
+    el.tokenKey.focus();
+}
+
+function closeTokenDialog() {
+    if (el.tokenDialog.open) el.tokenDialog.close();
+    state.newTokenValue = null;
+    el.tokenReveal.hidden = true;
+    el.tokenValue.textContent = '';
+}
+
+async function createToken() {
+    const keyId = el.tokenKey.value;
+    const name = el.tokenName.value.trim();
+    if (!keyId) {
+        showFormError(el.tokenError, 'Choose the key this token may reach.');
+        return;
+    }
+
+    el.tokenCreate.disabled = true;
+    el.tokenCreate.dataset.busy = 'true';
+
+    // The plaintext token is returned exactly once, by the database.
+    const { data, error } = await supabase.rpc('create_proxy_token', {
+        p_key_id: keyId,
+        p_name: name || null,
+    });
+
+    el.tokenCreate.disabled = false;
+    delete el.tokenCreate.dataset.busy;
+
+    if (error) {
+        showFormError(el.tokenError, friendlyError(error));
+        return;
+    }
+
+    state.newTokenValue = data?.token ?? null;
+    el.tokenValue.textContent = state.newTokenValue ?? '';
+    el.tokenReveal.hidden = false;
+    el.tokenCreate.disabled = true;
+    toast('Token created. Copy it now — it is not shown again.', 'ok', 6000);
+
+    await loadTokens();
+}
+
+async function revokeToken(token) {
+    const { error } = await supabase.rpc('revoke_proxy_token', { p_id: token.id });
+    if (error) {
+        toast(friendlyError(error), 'error');
+        return;
+    }
+    toast('Token revoked. Requests using it will now be rejected.', 'ok');
+    await loadTokens();
+}
+
+/* ==================================================================== *
+ * Usage
+ * ==================================================================== */
+function formatTokens(value) {
+    if (value === null || value === undefined) return '—';
+    return new Intl.NumberFormat().format(value);
+}
+
+function formatCost(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return '—';
+    if (amount === 0) return '$0.00';
+    if (amount < 0.01) return `$${amount.toFixed(4)}`;
+    return `$${amount.toFixed(2)}`;
+}
+
+function renderUsage() {
+    const rows = state.usage;
+    const succeeded = rows.filter((row) => row.ok);
+    const totalTokens = succeeded.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0);
+    const totalCost = succeeded.reduce((sum, row) => sum + (Number(row.cost_usd) || 0), 0);
+    const failures = rows.filter((row) => !row.ok).length;
+    const priced = succeeded.filter((row) => row.cost_usd !== null && row.cost_usd !== undefined).length;
+
+    const estimated = priced < succeeded.length;
+
+    el.usageStats.replaceChildren(
+        statCard({
+            glyph: 'i-pulse',
+            tone: 'brand',
+            label: 'Requests',
+            value: rows.length,
+            note: `Last ${rows.length ? USAGE_PAGE_SIZE : 0} shown`,
+        }),
+        statCard({
+            glyph: 'i-key',
+            label: 'Tokens',
+            value: formatTokens(totalTokens),
+            note: 'Prompt plus completion',
+        }),
+        statCard({
+            glyph: 'i-gauge',
+            label: 'Estimated spend',
+            value: formatCost(totalCost),
+            note: estimated ? 'Some rows unpriced' : 'Based on the pricing table',
+        }),
+        statCard({
+            glyph: failures > 0 ? 'i-shield-alert' : 'i-shield-check',
+            tone: failures > 0 ? 'warn' : 'ok',
+            label: 'Errors',
+            value: failures,
+            note: failures === 0 ? 'All requests succeeded' : 'Check the status column',
+        }),
+    );
+
+    /* -- Spend grouped by key -- */
+    const byKey = new Map();
+    for (const row of succeeded) {
+        const entry = byKey.get(row.key_id) ?? { tokens: 0, cost: 0, count: 0 };
+        entry.tokens += row.total_tokens ?? 0;
+        entry.cost += Number(row.cost_usd) || 0;
+        entry.count += 1;
+        byKey.set(row.key_id, entry);
+    }
+
+    const keyNames = new Map(state.keys.map((item) => [item.id, item.label || item.provider]));
+
+    if (byKey.size === 0) {
+        el.usageByKey.replaceChildren(
+            node('p', { class: 'breakdown__empty', text: 'No usage recorded yet.' }),
+        );
+    } else {
+        const rowsByKey = [...byKey.entries()].sort((a, b) => b[1].cost - a[1].cost);
+        const topCost = rowsByKey[0][1].cost || 1;
+
+        el.usageByKey.replaceChildren(
+            node('div', { class: 'breakdown' }, rowsByKey.map(([keyId, entry]) => {
+                const percent = Math.round((entry.cost / topCost) * 100);
+                return node('div', { class: 'breakdown__row' }, [
+                    node('div', { class: 'breakdown__head' }, [
+                        node('span', { class: 'breakdown__value', text: keyNames.get(keyId) ?? 'Deleted key' }),
+                        node('span', { class: 'breakdown__cost', text: formatCost(entry.cost) }),
+                    ]),
+                    node('div', {
+                        class: 'meter',
+                        role: 'img',
+                        'aria-label': `${keyNames.get(keyId) ?? 'Deleted key'}: ${formatCost(entry.cost)} across ${entry.count} requests`,
+                    }, [node('span', { class: 'meter__fill', style: `inline-size:${Math.max(percent, 2)}%` })]),
+                    node('span', {
+                        class: 'estimate-tag',
+                        text: `${entry.count} request${entry.count === 1 ? '' : 's'} · ${formatTokens(entry.tokens)} tokens`,
+                    }),
+                ]);
+            })),
+        );
+    }
+
+    /* -- Spend grouped by model -- */
+    const byModel = new Map();
+    for (const row of succeeded) {
+        const name = row.model || 'Unknown model';
+        const entry = byModel.get(name) ?? { tokens: 0, cost: 0, count: 0 };
+        entry.tokens += row.total_tokens ?? 0;
+        entry.cost += Number(row.cost_usd) || 0;
+        entry.count += 1;
+        byModel.set(name, entry);
+    }
+
+    if (byModel.size === 0) {
+        el.usageByModel.replaceChildren(
+            node('p', { class: 'breakdown__empty', text: 'No usage recorded yet.' }),
+        );
+    } else {
+        const rowsByModel = [...byModel.entries()].sort((a, b) => b[1].cost - a[1].cost);
+        const topCost = rowsByModel[0][1].cost || 1;
+
+        el.usageByModel.replaceChildren(
+            node('div', { class: 'breakdown' }, rowsByModel.map(([name, entry]) => {
+                const percent = Math.round((entry.cost / topCost) * 100);
+                return node('div', { class: 'breakdown__row' }, [
+                    node('div', { class: 'breakdown__head' }, [
+                        node('span', { class: 'breakdown__value' }, [
+                            node('code', { class: 'usage-model', text: name }),
+                        ]),
+                        node('span', { class: 'breakdown__cost', text: formatCost(entry.cost) }),
+                    ]),
+                    node('div', {
+                        class: 'meter',
+                        role: 'img',
+                        'aria-label': `${name}: ${formatCost(entry.cost)} across ${entry.count} requests`,
+                    }, [node('span', { class: 'meter__fill', style: `inline-size:${Math.max(percent, 2)}%` })]),
+                    node('span', {
+                        class: 'estimate-tag',
+                        text: `${entry.count} request${entry.count === 1 ? '' : 's'} · ${formatTokens(entry.tokens)} tokens`,
+                    }),
+                ]);
+            })),
+        );
+    }
+
+    /* -- Recent requests -- */
+    if (rows.length === 0) {
+        el.usageTable.hidden = true;
+        el.usageEmpty.hidden = false;
+        return;
+    }
+
+    el.usageEmpty.hidden = true;
+    el.usageTable.hidden = false;
+
+    el.usageTableBody.replaceChildren(...rows.map((row) => {
+        const ok = row.ok;
+        return node('tr', {}, [
+            node('td', {
+                class: 'cell-time',
+                text: formatRelative(row.created_at),
+                title: formatDateTime(row.created_at),
+            }),
+            node('td', { class: 'cell-name__sub', text: keyNames.get(row.key_id) ?? 'Deleted key' }),
+            node('td', {}, [node('code', { class: 'usage-model', text: row.model || '—' })]),
+            node('td', {}, [
+                ok
+                    ? node('span', { class: 'pill pill--ok' }, [
+                        icon('i-check'),
+                        node('span', { class: 'pill__text', text: String(row.status_code ?? 'OK') }),
+                    ])
+                    : node('span', { class: 'pill pill--fail' }, [
+                        icon('i-alert'),
+                        node('span', { class: 'pill__text', text: String(row.status_code || 'Error') }),
+                    ]),
+            ]),
+            node('td', { class: 'num muted-cell', text: formatTokens(row.total_tokens) }),
+            node('td', { class: 'num cost', text: formatCost(row.cost_usd) }),
+            node('td', { class: 'num muted-cell', text: row.latency_ms ? `${row.latency_ms} ms` : '—' }),
+        ]);
+    }));
+}
+
+function renderProxyEndpoint() {
+    el.proxyEndpoint.textContent = `${SUPABASE_URL}/functions/v1/${PROXY_FUNCTION_NAME}/v1/chat/completions`;
+}
+
+async function copyEndpoint(button) {
+    const value = el.proxyEndpoint.textContent;
+    if (!value || !(await copyText(value))) {
+        toast('Copying is blocked here. Select the URL and copy it manually.', 'error');
+        return;
+    }
+
+    const label = button.querySelector('.btn__label');
+    if (label) {
+        label.textContent = 'Copied';
+        setTimeout(() => { label.textContent = 'Copy'; }, 1400);
+    }
+    toast('Proxy URL copied.', 'ok');
+}
+
+async function copyNewToken(button) {
+    // Taken from memory, never from the DOM, and cleared on dialog close.
+    const value = state.newTokenValue;
+    if (!value) return;
+
+    if (!(await copyText(value))) {
+        toast('Copying is blocked here. Select the token and copy it manually.', 'error');
+        return;
+    }
+
+    const label = button.querySelector('.btn__label');
+    if (label) {
+        label.textContent = 'Copied';
+        setTimeout(() => { label.textContent = 'Copy'; }, 1400);
+    }
+    toast('Proxy token copied. Store it somewhere safe.', 'ok');
 }
 
 function initKeyDialog() {
@@ -1371,13 +1852,45 @@ function initActions() {
                 el.fApiKey.focus();
                 break;
             }
+            case 'new-token':
+                openTokenDialog();
+                break;
+            case 'token-close':
+                closeTokenDialog();
+                break;
+            case 'refresh-usage':
+                loadUsage();
+                toast('Usage refreshed.', 'info');
+                break;
+            case 'copy-endpoint':
+                copyEndpoint(trigger);
+                break;
+            case 'copy-token':
+                copyNewToken(trigger);
+                break;
             default:
                 break;
         }
     });
 
+    // Auto-fill the base URL whenever the provider changes.
+    el.fProvider.addEventListener('change', () => {
+        applyProviderUrl(el.fProvider.value, { force: true });
+    });
+
+    el.tokenForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await createToken();
+    });
+
+    el.tokenDialog.addEventListener('close', () => {
+        state.newTokenValue = null;
+        el.tokenReveal.hidden = true;
+        el.tokenValue.textContent = '';
+    });
+
     // Clicking the backdrop dismisses a dialog.
-    for (const dialog of [el.keyDialog, el.confirmDialog]) {
+    for (const dialog of [el.keyDialog, el.confirmDialog, el.tokenDialog]) {
         dialog.addEventListener('click', (event) => {
             if (event.target === dialog) dialog.close();
         });

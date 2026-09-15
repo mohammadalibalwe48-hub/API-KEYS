@@ -334,6 +334,12 @@
           <span class="navlink__text">API keys</span>
           <span class="navlink__meta" id="nav-key-count"></span>
         </a>
+        <a class="navlink" href="#usage" data-view-link="usage">
+          <span class="navlink__icon"><svg class="icon">
+              <use href="#i-pulse" />
+            </svg></span>
+          <span class="navlink__text">Usage</span>
+        </a>
         <a class="navlink" href="#account" data-view-link="account">
           <span class="navlink__icon"><svg class="icon">
               <use href="#i-user" />
@@ -462,6 +468,97 @@
           </section>
         </section>
 
+        <!-- ── Usage ────────────────────────────────────────────────── -->
+        <section class="view" id="view-usage" aria-labelledby="view-title" hidden>
+          <div class="stats" id="usage-stats"></div>
+
+          <section class="panel" aria-labelledby="panel-endpoint">
+            <header class="panel__head">
+              <h2 class="panel__title" id="panel-endpoint">Proxy endpoint</h2>
+              <p class="panel__sub">Point an OpenAI-compatible client here. No code changes needed.</p>
+            </header>
+            <div class="panel__body">
+              <div class="snippet">
+                <div class="snippet__head">
+                  <span class="snippet__label">Base URL</span>
+                  <button class="btn btn--ghost btn--sm" type="button" data-action="copy-endpoint">
+                    <svg class="icon">
+                      <use href="#i-copy" />
+                    </svg>
+                    <span class="btn__label">Copy</span>
+                  </button>
+                </div>
+                <code class="snippet__code" id="proxy-endpoint">&nbsp;</code>
+              </div>
+              <p class="note">
+                <svg class="icon">
+                  <use href="#i-info" />
+                </svg>
+                <span>
+                  Create a proxy token for a key in <strong>Account</strong>, then use it as the
+                  API key in your client. The token only ever reaches the one key it was
+                  created for, and can be revoked at any time.
+                </span>
+              </p>
+            </div>
+          </section>
+
+          <div class="panels">
+            <section class="panel" aria-labelledby="panel-by-key">
+              <header class="panel__head">
+                <h2 class="panel__title" id="panel-by-key">Spend by key</h2>
+                <p class="panel__sub">Where the activity is going.</p>
+              </header>
+              <div class="panel__body" id="usage-by-key"></div>
+            </section>
+
+            <section class="panel" aria-labelledby="panel-by-model">
+              <header class="panel__head">
+                <h2 class="panel__title" id="panel-by-model">Spend by model</h2>
+                <p class="panel__sub">Cost is estimated from the pricing table.</p>
+              </header>
+              <div class="panel__body" id="usage-by-model"></div>
+            </section>
+          </div>
+
+          <section class="panel" aria-labelledby="panel-requests">
+            <header class="panel__head panel__head--row">
+              <div>
+                <h2 class="panel__title" id="panel-requests">Recent requests</h2>
+                <p class="panel__sub">Counts and cost only. Prompt and completion text is never stored.</p>
+              </div>
+              <button class="btn btn--ghost btn--sm" type="button" data-action="refresh-usage">
+                <svg class="icon">
+                  <use href="#i-pulse" />
+                </svg>
+                <span class="btn__label">Refresh</span>
+              </button>
+            </header>
+            <div class="panel__body">
+              <div class="tablewrap">
+                <table class="table usage-table" id="usage-table" hidden>
+                  <thead>
+                    <tr>
+                      <th scope="col">When</th>
+                      <th scope="col">Key</th>
+                      <th scope="col">Model</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Tokens</th>
+                      <th scope="col">Cost</th>
+                      <th scope="col">Latency</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usage-table-body"></tbody>
+                </table>
+              </div>
+              <p class="activity__empty" id="usage-empty" hidden>
+                No proxied requests yet. Create a proxy token in Account and route a client
+                through the endpoint above.
+              </p>
+            </div>
+          </section>
+        </section>
+
         <!-- ── API keys ─────────────────────────────────────────────── -->
         <section class="view" id="view-keys" aria-labelledby="view-title" hidden>
           <div class="toolbar">
@@ -582,6 +679,24 @@
           </div>
 
           <section class="panel">
+            <header class="panel__head panel__head--row">
+              <div>
+                <h2 class="panel__title">Proxy tokens</h2>
+                <p class="panel__sub">Let a client send traffic through the vault so usage is recorded.</p>
+              </div>
+              <button class="btn btn--primary btn--sm" type="button" data-action="new-token">
+                <svg class="icon">
+                  <use href="#i-plus" />
+                </svg>
+                <span class="btn__label">New token</span>
+              </button>
+            </header>
+            <div class="panel__body">
+              <div id="token-list"></div>
+            </div>
+          </section>
+
+          <section class="panel">
             <header class="panel__head">
               <h2 class="panel__title">Session</h2>
               <p class="panel__sub">Ending the session clears this device only.</p>
@@ -615,6 +730,12 @@
           <use href="#i-key" />
         </svg>
         <span class="tabbar__text">Keys</span>
+      </a>
+      <a class="tabbar__item" href="#usage" data-view-link="usage">
+        <svg class="icon">
+          <use href="#i-pulse" />
+        </svg>
+        <span class="tabbar__text">Usage</span>
       </a>
       <a class="tabbar__item" href="#account" data-view-link="account">
         <svg class="icon">
@@ -739,6 +860,73 @@
         <span class="btn__label">Delete key</span>
       </button>
     </footer>
+  </dialog>
+
+  <dialog class="dialog dialog--sm" id="token-dialog" aria-labelledby="token-dialog-title">
+    <form class="dialog__form" id="token-form" method="dialog" novalidate>
+      <header class="dialog__head">
+        <div>
+          <h2 class="dialog__title" id="token-dialog-title">New proxy token</h2>
+          <p class="dialog__sub">Bound to one key. Shown once, stored only as a hash.</p>
+        </div>
+        <button class="btn btn--ghost btn--icon" type="button" data-action="token-close">
+          <svg class="icon">
+            <use href="#i-close" />
+          </svg>
+          <span class="sr-only">Close dialog</span>
+        </button>
+      </header>
+
+      <div class="dialog__body">
+        <div class="field">
+          <label class="field__label" for="t-key">Key</label>
+          <div class="field field--select">
+            <select class="input select" id="t-key" required></select>
+            <span class="field__icon field__icon--end"><svg class="icon">
+                <use href="#i-chevron-down" />
+              </svg></span>
+          </div>
+          <p class="field__hint">The token can only ever reach this key.</p>
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="t-name">Name <span class="field__optional">Optional</span></label>
+          <input class="input" id="t-name" type="text" maxlength="80" placeholder="Laptop CLI, staging bot" />
+        </div>
+
+        <div class="token-reveal" id="token-reveal" hidden>
+          <p class="token-reveal__warning">
+            <svg class="icon">
+              <use href="#i-alert" />
+            </svg>
+            <span>Copy this now. It will not be shown again.</span>
+          </p>
+          <div class="snippet">
+            <div class="snippet__head">
+              <span class="snippet__label">Proxy token</span>
+              <button class="btn btn--ghost btn--sm" type="button" data-action="copy-token">
+                <svg class="icon">
+                  <use href="#i-copy" />
+                </svg>
+                <span class="btn__label">Copy</span>
+              </button>
+            </div>
+            <code class="snippet__code" id="token-value">&nbsp;</code>
+          </div>
+        </div>
+
+        <p class="form__error" id="token-error" role="alert" hidden></p>
+      </div>
+
+      <footer class="dialog__foot">
+        <button class="btn btn--ghost" type="button" data-action="token-close">
+          <span class="btn__label">Close</span>
+        </button>
+        <button class="btn btn--primary" type="submit" id="token-create">
+          <span class="btn__label">Create token</span>
+        </button>
+      </footer>
+    </form>
   </dialog>
 
   <div class="toasts" id="toasts" role="region" aria-label="Notifications"></div>

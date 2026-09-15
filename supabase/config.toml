@@ -10,5 +10,13 @@ project_id = "hszumyzujgnjvetvnben"
 # verifies the user and relies on RLS-scoped reads.
 verify_jwt = true
 
+[functions.ai-proxy]
+# Disabled deliberately. Callers are non-Supabase clients (SDKs, CLIs)
+# holding a revocable vault proxy token (`kv_...`), not a user session JWT.
+# The function authenticates in-code by hashing the token and resolving it
+# through service_resolve_proxy_token(), which is granted to service_role
+# only. No browser and no user session ever invokes this function.
+verify_jwt = false
+
 [edge_runtime]
 policy = "per_worker"

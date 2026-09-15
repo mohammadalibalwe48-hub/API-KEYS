@@ -1,5 +1,5 @@
 -- =====================================================================
--- KeyVault — database schema snapshot
+-- Keyvault — database schema snapshot
 -- ---------------------------------------------------------------------
 -- This file mirrors exactly what is deployed to Supabase project
 -- hszumyzujgnjvetvnben. It is documentation / disaster-recovery, not a
@@ -151,7 +151,32 @@ alter publication supabase_realtime add table public.api_keys;
 -- key can never be echoed back.
 
 -- ---------------------------------------------------------------------
--- 5. Operational notes
+-- 5. Usage tracking, proxy tokens and per-provider URLs
+-- ---------------------------------------------------------------------
+-- user_provider_urls  (user_id, provider) -> base_url, probe_path
+--   Auto-learned: saving a key records its base URL for that provider, so
+--   the next key of the same provider pre-fills. RLS: own rows only.
+--
+-- usage_events        one row per proxied request
+--   Stores counts, model, status, latency and estimated cost. Prompt and
+--   completion text is NEVER stored. RLS: select own rows only; there is no
+--   insert policy, so only the proxy (via service key) can write.
+--
+-- proxy_tokens        token_hash (unique), token_hint, key_id, revoked_at
+--   A token is bound to ONE key, so a caller never names a key and cannot
+--   reach another. Stored only as a SHA-256 hash; token_hash is not granted
+--   to clients.
+--
+-- model_pricing       model_pattern -> input/output USD per 1M tokens
+--   Shared, read-only reference data. Approximate public list prices.
+--
+-- service_* functions are granted to service_role ONLY, never to
+-- authenticated. Verified: a signed-in user calling service_resolve_proxy_token,
+-- service_get_key or service_get_provider_url receives a permission error, and
+-- cannot select proxy_tokens.token_hash.
+
+-- ---------------------------------------------------------------------
+-- 6. Operational notes
 -- ---------------------------------------------------------------------
 -- * auth.users is managed by Supabase Auth; sign-up requires a unique
 --   email and a password of at least 6 characters.

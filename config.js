@@ -18,7 +18,7 @@ export const PROVIDERS = ['AgentRouter', 'TokenHarbor', 'SeekAI', 'Custom'];
 export const REVEAL_TIMEOUT_MS = 30_000;
 
 /**
- * Server-side probe used by the "Test" button.
+ * Server-side probe used by the validate action.
  *
  * The browser never sends the API key. It sends only the key's id, and the
  * Edge Function decrypts the key inside the database, checks ownership via
@@ -34,3 +34,41 @@ export const TEST_FUNCTION_NAME = 'test-api-key';
  * OpenAI-compatible providers.
  */
 export const TEST_PROBE_PATH = '/models';
+
+/**
+ * Default API base URLs.
+ *
+ * IMPORTANT — THESE ARE UNVERIFIED PLACEHOLDERS. They are not confirmed
+ * vendor endpoints. They exist so the form can pre-fill something rather
+ * than nothing, and so a probe has a target out of the box.
+ *
+ * You do not have to maintain this list: save a key once with the correct
+ * URL and the app stores it per provider in public.user_provider_urls, then
+ * pre-fills it automatically from then on. Your saved value always wins
+ * over the value here.
+ *
+ * To replace these permanently, edit the constants below.
+ */
+export const PROVIDER_BASE_URLS = {
+    AgentRouter: 'https://api.agentrouter.com/v1',
+    TokenHarbor: 'https://api.tokenharbor.com/v1',
+    SeekAI: 'https://api.seekai.com/v1',
+    Custom: '',
+};
+
+/**
+ * Flags the defaults above as unverified, so the interface says so plainly
+ * instead of presenting a guess as fact. Set to false once the URLs are
+ * confirmed.
+ */
+export const PROVIDER_URLS_ARE_PLACEHOLDERS = true;
+
+/**
+ * Server-side proxy that routes provider traffic so usage and cost can be
+ * recorded per key. Point any OpenAI-compatible client at
+ * `<SUPABASE_URL>/functions/v1/ai-proxy/v1/...` using a vault proxy token.
+ */
+export const PROXY_FUNCTION_NAME = 'ai-proxy';
+
+/** How many recent requests to list in the Usage view. */
+export const USAGE_PAGE_SIZE = 25;

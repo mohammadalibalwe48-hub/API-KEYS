@@ -16,7 +16,9 @@ Security**, and **decrypted only on demand**, in memory, for a few seconds.
 | **Auth** | Email/password sign up, log in, log out, persistent sessions, same account across phone / iPad / desktop |
 | **Providers** | `AgentRouter`, `TokenHarbor`, `SeekAI`, plus `Custom` for anything else |
 | **Keys** | Add, edit, delete, reveal/hide, one-click copy, search, provider filter chips |
-| **Test** | Verify a key actually works against its provider, from the server — see [Connectivity check](#connectivity-check-test-button) |
+| **Validation** | Verify a key actually works against its provider, from the server — see [Connectivity check](#connectivity-check-test-button) |
+| **Usage** | Route provider traffic through a proxy and record tokens plus estimated spend per key |
+| **Proxy tokens** | Revocable per-key tokens (`kv_...`) so an SDK can talk through the vault without ever holding the real key |
 | **Fields** | Provider, API key, optional label, optional description, optional API Base URL |
 | **Masking** | Keys show as `••••••••••••••••XXXX` by default (mask + last 4) |
 | **Sync** | Supabase Realtime pushes changes to every signed-in device instantly |
@@ -237,6 +239,81 @@ snippet is returned or logged. The key is never written to the function log.
 provider's real host differs, set the key's **API Base URL** in the app and the
 stored value takes precedence — `Custom` keys require one.
 
+## Usage tracking
+
+Route a client through the vault and every request is measured. This is
+server-side: the real key stays in the database and is never handed to the
+caller.
+
+**Set it up**
+
+1. Open **Account**, create a **proxy token**, and choose the key it may reach.
+   The token is shown once and stored only as a SHA-256 hash.
+2. Point any OpenAI-compatible client at the proxy, using the token as its API
+   key:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://hszumyzujgnjvetvnben.supabase.co/functions/v1/ai-proxy/v1",
+    api_key="kv_...",          # the vault proxy token, not the provider key
+)
+
+client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+```
+
+```bash
+curl https://hszumyzujgnjvetvnben.supabase.co/functions/v1/ai-proxy/v1/chat/completions \
+  -H "Authorization: Bearer kv_..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+3. The **Usage** view fills in: request count, tokens, estimated spend, spend by
+   key and by model, and a table of recent requests.
+
+**Why a token rather than the key**
+
+| Property | Effect |
+|---|---|
+| Bound to one key at creation | The caller never names a key, so it cannot reach another |
+| Stored as a SHA-256 hash | A database leak does not yield usable tokens |
+| Revocable in one click | Kill a compromised client without rotating the real key |
+| `token_hash` not granted to clients | Even a signed-in user cannot read it |
+
+**What is and is not stored.** Counts, model, status, latency and estimated cost
+are recorded. **Prompt and completion text is never persisted** — the body is
+read only to count tokens when the provider does not report usage.
+
+**Cost is estimated.** Figures come from `model_pricing`, seeded with
+approximate public list prices. Providers change prices and add models, so an
+unrecognised model records tokens with the cost left blank rather than guessing.
+Correct the row in `public.model_pricing` to improve accuracy.
+
+---
+
+## Provider URLs
+
+The base URL is **auto-learned**. Save one key with the correct URL and it is
+remembered for that provider, then pre-filled next time — so the same host is
+never typed twice. Resolution order is:
+
+1. a URL you already saved for that provider (`user_provider_urls`),
+2. a URL already used by one of your keys of that provider,
+3. the default in [`config.js`](config.js:44).
+
+**Those defaults are unverified placeholders** — not confirmed vendor endpoints.
+They exist so the field pre-fills something rather than nothing, and the hint
+under the field says so whenever one is used. Your own saved value always wins.
+Set [`PROVIDER_URLS_ARE_PLACEHOLDERS`](config.js:60) to `false` once the real
+hosts are in place.
+
+---
+
 ### Verified behaviour
 
 These were executed against the live database (inside rolled-back
@@ -260,6 +337,18 @@ Connectivity-check tests against the deployed function:
 | Private target (`https://127.0.0.1/v1`) | refused — "https required, private addresses blocked" |
 | Custom key with no base URL | clear error plus an actionable hint |
 | Unknown / non-owned key id | `404 API key not found` (RLS-scoped) |
+
+Usage-tracking tests against the deployed proxy:
+
+| Test | Result |
+|---|---|
+| No token supplied | `401 Missing or malformed proxy token` |
+| Bogus token | `401 Invalid or revoked proxy token` |
+| Valid token, key with no base URL | `400` with an actionable message, not a silent guess |
+| Valid token, real provider, invalid key | reached the provider's correct endpoint; `401` returned verbatim, key masked |
+| Signed-in user calls any `service_*` function | blocked |
+| Signed-in user selects `proxy_tokens.token_hash` | blocked |
+| Usage row recorded after a proxied call | yes — status, tokens, latency persisted; cost left blank for an invalid key |
 
 ---
 
