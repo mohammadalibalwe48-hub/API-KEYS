@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Local secrets — never commit real secret/service keys
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Assistant/tooling metadata — not part of the application
+.roo/
+
+# Logs and build output
+*.log
+npm-debug.log*
+dist/
+build/
+.vercel/
+.netlify/

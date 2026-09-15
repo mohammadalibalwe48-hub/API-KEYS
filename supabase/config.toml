@@ -1,0 +1,14 @@
+# Supabase project configuration for local tooling.
+# The database itself is already provisioned in the cloud project; this file
+# documents function-level settings so behaviour is reproducible.
+
+project_id = "hszumyzujgnjvetvnben"
+
+[functions.test-api-key]
+# Keep JWT verification ON: only a signed-in user with a valid session
+# token can invoke the key-connectivity probe. The function additionally
+# verifies the user and relies on RLS-scoped reads.
+verify_jwt = true
+
+[edge_runtime]
+policy = "per_worker"

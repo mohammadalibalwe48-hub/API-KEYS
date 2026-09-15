@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="description" content="Private, encrypted manager for your AI provider API keys." />
+  <title>KeyVault · AI API Key Manager</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- ============================= AUTH SCREEN ============================= -->
+  <main id="auth-view" class="auth-view" hidden>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">KV</span>
+        <div>
+          <h1 id="auth-title" class="brand-name">KeyVault</h1>
+          <p class="brand-sub">Encrypted AI API key manager</p>
+        </div>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Authentication mode">
+        <button id="tab-login" class="tab is-active" role="tab" aria-selected="true"
+                aria-controls="login-form" type="button">Log in</button>
+        <button id="tab-signup" class="tab" role="tab" aria-selected="false"
+                aria-controls="signup-form" type="button">Sign up</button>
+      </div>
+
+      <form id="login-form" class="form" role="tabpanel" aria-labelledby="tab-login" novalidate>
+        <label class="field">
+          <span class="field-label">Email</span>
+          <input id="login-email" type="email" name="email" autocomplete="email"
+                 required placeholder="you@example.com" />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input id="login-password" type="password" name="password" autocomplete="current-password"
+                 required placeholder="••••••••" />
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">Log in</button>
+        <p class="hint">Your keys sync automatically across phone, iPad, and desktop.</p>
+      </form>
+
+      <form id="signup-form" class="form" role="tabpanel" aria-labelledby="tab-signup" novalidate hidden>
+        <label class="field">
+          <span class="field-label">Email</span>
+          <input id="signup-email" type="email" name="email" autocomplete="email"
+                 required placeholder="you@example.com" />
+        </label>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input id="signup-password" type="password" name="password" autocomplete="new-password"
+                 required minlength="6" placeholder="At least 6 characters" />
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">Create account</button>
+        <p class="hint">Each account can only ever read its own keys — enforced in the database.</p>
+      </form>
+    </section>
+  </main>
+
+  <!-- ============================== APP SCREEN ============================= -->
+  <div id="app-view" class="app-view" hidden>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand brand--compact">
+          <span class="brand-mark" aria-hidden="true">KV</span>
+          <span class="brand-name">KeyVault</span>
+        </div>
+        <div class="topbar-right">
+          <span id="sync-status" class="sync-status" title="Realtime sync status">
+            <span class="dot" aria-hidden="true"></span><span id="sync-label">Live</span>
+          </span>
+          <span id="user-email" class="user-email"></span>
+          <button id="logout-btn" class="btn btn-ghost" type="button">Log out</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="toolbar" aria-label="Filters">
+        <div class="search-wrap">
+          <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M9 3a6 6 0 104.472 10.003l3.262 3.262a1 1 0 001.415-1.415l-3.262-3.262A6 6 0 009 3zm0 2a4 4 0 110 8 4 4 0 010-8z"/>
+          </svg>
+          <input id="search" type="search" class="search-input" placeholder="Search provider, label, description…"
+                 aria-label="Search keys" autocomplete="off" />
+        </div>
+        <button id="add-btn" class="btn btn-primary" type="button">
+          <svg viewBox="0 0 20 20" aria-hidden="true" class="icon">
+            <path d="M10 4a1 1 0 011 1v4h4a1 1 0 110 2h-4v4a1 1 0 11-2 0v-4H5a1 1 0 110-2h4V5a1 1 0 011-1z"/>
+          </svg>
+          Add key
+        </button>
+      </section>
+
+      <div id="provider-chips" class="chips" role="group" aria-label="Filter by provider"></div>
+
+      <div id="list-status" class="list-status" role="status" aria-live="polite"></div>
+
+      <section id="key-grid" class="grid" aria-label="API keys"></section>
+
+      <div id="empty-state" class="empty" hidden>
+        <h2>No keys yet</h2>
+        <p>Add your first AgentRouter, TokenHarbor, or SeekAI key. It is encrypted before it touches the disk.</p>
+        <button id="empty-add-btn" class="btn btn-primary" type="button">Add key</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============================== DIALOG ================================ -->
+  <dialog id="key-dialog" class="dialog" aria-labelledby="dialog-title">
+    <form id="key-form" class="form dialog-form" method="dialog" novalidate>
+      <div class="dialog-head">
+        <h2 id="dialog-title">Add API key</h2>
+        <button id="dialog-close" class="btn btn-ghost btn-icon" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select id="f-provider" name="provider" required></select>
+      </label>
+
+      <label class="field">
+        <span class="field-label">
+          API key <span id="key-optional" class="field-note" hidden>(leave blank to keep current)</span>
+        </span>
+        <span class="input-group">
+          <input id="f-api-key" name="api_key" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="sk-…" />
+          <button id="toggle-key-visibility" class="btn btn-ghost btn-icon" type="button"
+                  aria-label="Show typed key">👁</button>
+        </span>
+      </label>
+
+      <label class="field">
+        <span class="field-label">Label <span class="field-note">optional</span></span>
+        <input id="f-label" name="label" type="text" maxlength="120" placeholder="e.g. Production" />
+      </label>
+
+      <label class="field">
+        <span class="field-label">Description <span class="field-note">optional</span></span>
+        <textarea id="f-description" name="description" rows="2" maxlength="500"
+                  placeholder="What is this key used for?"></textarea>
+      </label>
+
+      <label class="field">
+        <span class="field-label">API Base URL <span class="field-note">optional</span></span>
+        <input id="f-base-url" name="api_base_url" type="url" inputmode="url"
+               placeholder="https://api.example.com/v1" />
+      </label>
+
+      <div class="dialog-actions">
+        <button id="dialog-cancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="dialog-save" class="btn btn-primary" type="submit">Save key</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- =========================== CONFIRM DIALOG =========================== -->
+  <dialog id="confirm-dialog" class="dialog dialog--sm" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Delete this key?</h2>
+    <p id="confirm-text" class="muted">This permanently removes the encrypted key from your account.</p>
+    <div class="dialog-actions">
+      <button id="confirm-cancel" class="btn btn-ghost" type="button">Cancel</button>
+      <button id="confirm-ok" class="btn btn-danger" type="button">Delete</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
