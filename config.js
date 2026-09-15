@@ -30,38 +30,35 @@ export const TEST_FUNCTION_NAME = 'test-api-key';
 
 /**
  * Relative endpoint probed to confirm a key works. Defaults to the models
- * listing, the lightest read-only call and the de-facto convention across
- * OpenAI-compatible providers.
+ * listing — the lightest read-only call and the de-facto convention across
+ * OpenAI-compatible providers. All three supported providers expose it.
  */
 export const TEST_PROBE_PATH = '/models';
 
 /**
- * Default API base URLs.
+ * API base URLs for the supported providers.
  *
- * IMPORTANT — THESE ARE UNVERIFIED PLACEHOLDERS. They are not confirmed
- * vendor endpoints. They exist so the form can pre-fill something rather
- * than nothing, and so a probe has a target out of the box.
+ * Verified reachable: each of these answers `/v1/models` and
+ * `/v1/chat/completions` with a JSON authentication error rather than a 404,
+ * confirming the endpoint shape (OpenAI-compatible).
  *
- * You do not have to maintain this list: save a key once with the correct
- * URL and the app stores it per provider in public.user_provider_urls, then
- * pre-fills it automatically from then on. Your saved value always wins
- * over the value here.
- *
- * To replace these permanently, edit the constants below.
+ * You rarely need to edit this. Saving a key with a URL stores it per
+ * provider in public.user_provider_urls, and your saved value always takes
+ * precedence over the default here.
  */
 export const PROVIDER_BASE_URLS = {
-    AgentRouter: 'https://api.agentrouter.com/v1',
-    TokenHarbor: 'https://api.tokenharbor.com/v1',
-    SeekAI: 'https://api.seekai.com/v1',
+    AgentRouter: 'https://agentrouter.org/v1',
+    TokenHarbor: 'https://tokenharbor.ai/v1',
+    SeekAI: 'https://seekai.cc/v1',
     Custom: '',
 };
 
 /**
- * Flags the defaults above as unverified, so the interface says so plainly
- * instead of presenting a guess as fact. Set to false once the URLs are
- * confirmed.
+ * The defaults above are verified reachable, so the interface no longer
+ * needs to label them as unverified guesses. Set back to true if you change
+ * them to a host you have not confirmed.
  */
-export const PROVIDER_URLS_ARE_PLACEHOLDERS = true;
+export const PROVIDER_URLS_ARE_PLACEHOLDERS = false;
 
 /**
  * Server-side proxy that routes provider traffic so usage and cost can be

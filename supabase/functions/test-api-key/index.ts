@@ -34,9 +34,9 @@ const corsHeaders = {
 
 /** Known provider defaults, used when the row has no api_base_url. */
 const PROVIDER_BASE_URLS: Record<string, string> = {
-    AgentRouter: 'https://api.agentrouter.com/v1',
-    TokenHarbor: 'https://api.tokenharbor.com/v1',
-    SeekAI: 'https://api.seekai.com/v1',
+    AgentRouter: 'https://agentrouter.org/v1',
+    TokenHarbor: 'https://tokenharbor.ai/v1',
+    SeekAI: 'https://seekai.cc/v1',
     Custom: '',
 };
 
@@ -275,6 +275,7 @@ Deno.serve(async (req: Request) => {
 
     let status = 0;
     let bodyText = '';
+    let responseType = '';
     let networkError: string | null = null;
 
     try {
@@ -293,6 +294,7 @@ Deno.serve(async (req: Request) => {
         });
 
         status = upstream.status;
+        responseType = upstream.headers.get('content-type') ?? '';
         const raw = (await upstream.text()).slice(0, MAX_BODY_CHARS);
         bodyText = scrub(raw, [secret]);
     } catch (error) {
@@ -307,9 +309,25 @@ Deno.serve(async (req: Request) => {
     let ok: boolean;
     let message: string;
 
+    /**
+     * A provider that answers with HTML has NOT accepted the key. Bot and
+     * WAF checks, CDN interstitials and captive portals all return 200 with
+     * an HTML body. Reporting that as a valid key would be a false positive,
+     * which is worse than no answer at all — so it is called out explicitly
+     * with the likely cause.
+     */
+    const bodyIsHtml = /^\s*<|text\/html/i.test(responseType) || /^\s*<(!doctype|html|\?xml)/i.test(bodyText);
+    const notJson = !responseType.includes('application/json') && !bodyText.trimStart().startsWith('{');
+
     if (networkError) {
         ok = false;
         message = networkError;
+    } else if (bodyIsHtml) {
+        ok = false;
+        message = 'The provider returned an HTML bot or security check instead of an API response, so the key could not be verified. This usually means the provider blocks requests from cloud or server IP addresses and expects a browser.';
+    } else if (notJson && status >= 200 && status < 400) {
+        ok = false;
+        message = `The provider returned ${responseType.split(';')[0] || 'a non-JSON body'} rather than JSON, so the key could not be verified.`;
     } else if (status === 401 || status === 403) {
         ok = false;
         message = extractReason(status, bodyText);

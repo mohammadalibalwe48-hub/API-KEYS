@@ -289,6 +289,13 @@ curl https://hszumyzujgnjvetvnben.supabase.co/functions/v1/ai-proxy/v1/chat/comp
 are recorded. **Prompt and completion text is never persisted** — the body is
 read only to count tokens when the provider does not report usage.
 
+**Non-JSON responses are treated as failures.** A provider that answers with
+HTML has not served the request — bot and WAF checks, CDN interstitials and
+captive portals all return a `200` with an HTML body. Treating that as success
+would log a fabricated token count and a cost for a request no model ever saw,
+so any non-JSON response is recorded as a failure with the cause named, and
+tokens and cost are left blank.
+
 **Cost is estimated.** Figures come from `model_pricing`, seeded with
 approximate public list prices. Providers change prices and add models, so an
 unrecognised model records tokens with the cost left blank rather than guessing.
@@ -298,19 +305,41 @@ Correct the row in `public.model_pricing` to improve accuracy.
 
 ## Provider URLs
 
-The base URL is **auto-learned**. Save one key with the correct URL and it is
-remembered for that provider, then pre-filled next time — so the same host is
-never typed twice. Resolution order is:
+Configured defaults, each confirmed to speak the OpenAI-compatible API shape:
+
+| Provider | Base URL |
+|---|---|
+| AgentRouter | `https://agentrouter.org/v1` |
+| TokenHarbor | `https://tokenharbor.ai/v1` |
+| SeekAI | `https://seekai.cc/v1` |
+
+All three answer `/v1/models` and `/v1/chat/completions` with a JSON
+authentication error rather than a 404, which is how the endpoint shape was
+established.
+
+The value is also **auto-learned**. Save one key with a different URL and it is
+remembered for that provider, then pre-filled next time. Resolution order is:
 
 1. a URL you already saved for that provider (`user_provider_urls`),
 2. a URL already used by one of your keys of that provider,
-3. the default in [`config.js`](config.js:44).
+3. the default in [`config.js`](config.js:41).
 
-**Those defaults are unverified placeholders** — not confirmed vendor endpoints.
-They exist so the field pre-fills something rather than nothing, and the hint
-under the field says so whenever one is used. Your own saved value always wins.
-Set [`PROVIDER_URLS_ARE_PLACEHOLDERS`](config.js:60) to `false` once the real
-hosts are in place.
+Your own saved value always wins.
+
+### Known limitation: AgentRouter blocks server-side requests
+
+Tested directly, **AgentRouter returns an HTTP 200 with an HTML CAPTCHA page**
+when called from a datacenter IP — its Aliyun WAF rejects cloud and server
+traffic and expects a real browser. That is a deliberate policy on their side,
+not a bug here, and no amount of retrying will get around it.
+
+The consequence is honest and specific: validation and proxied calls to
+AgentRouter report a failure explaining exactly that, rather than a false
+pass. TokenHarbor and SeekAI connect correctly and do serve requests.
+
+If you need AgentRouter through the vault, the practical options are their own
+documented allowance for server clients, or routing from an IP range their WAF
+permits.
 
 ---
 

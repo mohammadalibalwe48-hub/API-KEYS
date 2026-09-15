@@ -34,11 +34,14 @@ const corsHeaders = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-/** Provider fallbacks used when the key has no base URL of its own. */
+/**
+ * Fallbacks used when a key has no base URL of its own.
+ * Verified reachable (OpenAI-compatible `/v1` endpoints).
+ */
 const PROVIDER_BASE_URLS: Record<string, string> = {
-    AgentRouter: 'https://api.agentrouter.com/v1',
-    TokenHarbor: 'https://api.tokenharbor.com/v1',
-    SeekAI: 'https://api.seekai.com/v1',
+    AgentRouter: 'https://agentrouter.org/v1',
+    TokenHarbor: 'https://tokenharbor.ai/v1',
+    SeekAI: 'https://seekai.cc/v1',
     Custom: '',
 };
 
@@ -341,11 +344,21 @@ Deno.serve(async (req: Request) => {
 
     /* ---- 6. Pass the response through, capturing usage if JSON ------- */
     const contentType = upstream.headers.get('content-type') ?? '';
+    const isJson = contentType.includes('application/json');
+
+    /**
+     * A provider that answers with HTML has NOT served the request. Upstream
+     * bot/WAF checks, CDN interstitials and captive portals all return a
+     * 200 with an HTML body. Treating that as success would record a
+     * fabricated token count and a cost for a request no model ever saw, so
+     * a non-JSON response with a 2xx status is recorded as a failure.
+     */
+    const served = upstream.ok && isJson;
 
     let usage: { prompt: number | null; completion: number | null } = { prompt: null, completion: null };
     let responseBody: ArrayBuffer | null = null;
 
-    if (!isStream && contentType.includes('application/json')) {
+    if (!isStream && isJson) {
         const buffer = await upstream.arrayBuffer();
         if (buffer.byteLength <= MAX_CAPTURE_BYTES) {
             responseBody = buffer;
@@ -363,15 +376,16 @@ Deno.serve(async (req: Request) => {
 
     clearTimeout(timeout);
 
-    // Fall back to estimation only when the provider reported nothing.
-    if (usage.prompt === null && parsedBody) {
+    // Fall back to estimation only when the provider reported nothing AND
+    // the response was genuine JSON from the model endpoint.
+    if (served && usage.prompt === null && parsedBody) {
         usage.prompt = estimateTokens({
             messages: parsedBody.messages,
             prompt: parsedBody.prompt,
             input: parsedBody.input,
         });
     }
-    if (usage.completion === null && responseBody) {
+    if (served && usage.completion === null && responseBody) {
         try {
             const payload = JSON.parse(new TextDecoder().decode(responseBody));
             const choiceText = payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.text;
@@ -392,13 +406,18 @@ Deno.serve(async (req: Request) => {
         output: Number(row.output_usd_per_mtok) || 0,
     }));
 
-    const cost = upstream.ok
+    // No usage and no cost unless a model actually answered.
+    const cost = served
         ? estimateCost(pricing, model, usage.prompt, usage.completion)
         : null;
 
-    const errorText = upstream.ok
+    const recordedTokens = served ? total : null;
+
+    const errorText = served
         ? null
-        : scrub(new TextDecoder().decode(responseBody ?? new ArrayBuffer(0)).slice(0, 300) || upstream.statusText, [secret]);
+        : (isJson
+            ? scrub(new TextDecoder().decode(responseBody ?? new ArrayBuffer(0)).slice(0, 300) || upstream.statusText, [secret])
+            : `Provider returned ${contentType.split(';')[0] || 'a non-JSON body'} instead of JSON (HTTP ${upstream.status}). This usually means a bot or WAF check, a CDN interstitial, or an endpoint that does not accept server-side requests.`);
 
     await record(admin, {
         user_id: userId,
@@ -407,10 +426,10 @@ Deno.serve(async (req: Request) => {
         model,
         path: suffix,
         status_code: upstream.status,
-        ok: upstream.ok,
-        prompt_tokens: usage.prompt,
-        completion_tokens: usage.completion,
-        total_tokens: total,
+        ok: served,
+        prompt_tokens: served ? usage.prompt : null,
+        completion_tokens: served ? usage.completion : null,
+        total_tokens: recordedTokens,
         cost_usd: cost,
         latency_ms: Date.now() - started,
         error: errorText,
@@ -424,7 +443,8 @@ Deno.serve(async (req: Request) => {
         provider,
         model,
         status: upstream.status,
-        total_tokens: total,
+        served,
+        total_tokens: recordedTokens,
         cost_usd: cost,
         latency_ms: Date.now() - started,
     }));
