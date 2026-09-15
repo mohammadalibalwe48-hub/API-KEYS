@@ -386,9 +386,13 @@ keys without decrypting anything. `key_last4` powers the masked display.
 ├── test-function.ps1     # End-to-end test of the connectivity-check function
 ├── supabase/
 │   ├── config.toml
-│   └── functions/test-api-key/
-│       ├── index.ts      # Server-side provider probe
-│       └── deno.json
+│   └── functions/
+│       ├── test-api-key/
+│       │   ├── index.ts  # Server-side provider probe (validate a key)
+│       │   └── deno.json
+│       └── ai-proxy/
+│           ├── index.ts  # Routes provider traffic, measures usage and cost
+│           └── deno.json
 └── README.md
 ```
 
