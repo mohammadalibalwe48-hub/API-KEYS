@@ -16,10 +16,14 @@ Security**, and **decrypted only on demand**, in memory, for a few seconds.
 | **Auth** | Email/password sign up, log in, log out, persistent sessions, same account across phone / iPad / desktop |
 | **Providers** | `AgentRouter`, `TokenHarbor`, `SeekAI`, plus `Custom` for anything else |
 | **Keys** | Add, edit, delete, reveal/hide, one-click copy, search, provider filter chips |
+| **Expiry** | Give a key a lifetime — preset or exact date. Expired keys are kept but *cannot be used*, enforced in the database. See [Key expiry](#key-expiry) |
+| **Groups** | Name and colour-code buckets, filter by group, and manage them in Account. See [Key groups](#key-groups) |
+| **Bulk actions** | Tick several keys, then assign a group, set an expiry, validate them all, export, or delete |
+| **Export** | Download metadata for the filtered or selected keys as JSON — **never the secrets** |
 | **Validation** | Verify a key actually works against its provider, from the server — see [Connectivity check](#connectivity-check-test-button) |
 | **Usage** | Route provider traffic through a proxy and record tokens plus estimated spend per key |
 | **Proxy tokens** | Revocable per-key tokens (`kv_...`) so an SDK can talk through the vault without ever holding the real key |
-| **Fields** | Provider, API key, optional label, optional description, optional API Base URL |
+| **Fields** | Provider, API key, optional label, description, API Base URL, group and expiry |
 | **Masking** | Keys show as `••••••••••••••••XXXX` by default (mask + last 4) |
 | **Sync** | Supabase Realtime pushes changes to every signed-in device instantly |
 | **Design** | A unified design system — see [Interface](#interface) |
@@ -37,26 +41,48 @@ first, so a browser without `light-dark()` still renders a coherent light theme.
 Type, spacing (4px rhythm), radii, depth and motion are all tokenised in the
 `tokens` layer; components never hard-code a value.
 
-**Colour system.** A neutral ramp (`--ink` → `--ink-faint`), a single accent,
-and three semantic families (ok / warn / danger), each with base, quiet and line
-variants for composed surfaces. The four providers get evenly spaced
-categorical hues, applied through a `--provider-hue` custom property so a
-provider's identity carries into dots, filter pills and dashboard meters.
+**Colour system.** A cream canvas, deep forest-green surfaces and a single mint
+accent. A green-tinted neutral ramp (`--ink` → `--ink-faint`) carries the text,
+and three semantic families (ok / warn / danger) each have base, quiet and line
+variants for composed surfaces. The four providers get evenly spaced categorical
+hues, applied through a `--provider-hue` custom property so a provider's identity
+carries into dots, filter pills and dashboard meters.
 
-**Iconography.** Zero emoji. A 29-symbol inline SVG sprite carries its own
+Two deliberate details sit inside the palette. First, **green is both the brand
+and the "healthy" state**, so the semantic families were tuned to sit beside it
+rather than clash: `warn` is a warm amber, `danger` a soft brick. Second, the
+mint is a *surface* colour, not a text colour — at its lightness it cannot carry
+small type on cream. A darker sibling, `--accent-text`, exists for exactly that,
+and every textual use of the accent goes through it. The mint's label colour is
+the deep green too, since white on a 0.712-lightness green is not readable.
+
+**Shape.** Generous radii: cards are 22px, dialogs 28px, controls 12px, and only
+true status chips are full pills. Depth is soft, green-tinted and low-contrast,
+so a card reads as paper on cream rather than a floating panel.
+
+**Iconography.** Zero emoji. A 32-symbol inline SVG sprite carries its own
 stroke attributes so geometry survives any cascade context. Icons are referenced
-by `<use href="#i-…">` in markup and by a small `icon()` helper in JS.
+by `<use href="#i-...">` in markup and by a small `icon()` helper in JS.
 
 **Layout.** Two shells that swap at 1024px: a mobile-first stack with a bottom
 tab bar, and a desktop layout with a sticky sidebar rail. Navigation is
 hash-routed (`#overview`, `#keys`, `#account`), so refresh, back and forward all
 behave, and the active view is reflected in `aria-current`.
 
-**Views.** An Overview with summary metrics, a provider distribution, the
-security posture, and recent validation results. An API keys view that renders a
-real `<table>` at ≥900px and a card stack below it — both from the same data, so
-desktop gets density and mobile gets legibility. An Account view for identity,
-theme choice and session control.
+**Views.** An Overview that opens on a centred hero, then summary metrics, a
+provider distribution, the security posture, recent validation results, and a
+**keys needing attention** panel that appears when anything has expired or is
+close to it. An API keys view that renders a real `<table>` at ≥900px and a card
+stack below it — both from the same data, so desktop gets density and mobile gets
+legibility — with row selection, provider and group filters, and a sticky bulk
+bar. An Account view for identity, group management, theme choice and session
+control.
+
+**Inversion.** The deep green appears wherever a surface should feel decisive:
+the brand mark, the active navigation item, the active filter chip, the auth
+brand panel and the primary CTA. This is what gives the interface a single
+hierarchy — the cream is the canvas, the white is the content, and the green is
+the act.
 
 **States.** Every interactive element defines hover, active, focus-visible,
 disabled and busy states. Buttons carry a spinner via `data-busy`, async actions
@@ -72,9 +98,11 @@ and a `prefers-reduced-motion` guard that collapses all transitions.
 **Theme.** System by default, overridable per device from the app bar or Account
 view, applied before first paint by a tiny inline script so there is no flash.
 
-**Typography.** The system UI stack (Inter when present) for interface text, a
-monospace stack for keys and URLs, `tabular-nums` wherever figures align, and
-`text-wrap: balance` on the auth headline.
+**Typography.** Inter, loaded from Google Fonts, for interface text — with a
+system fallback stack so it degrades cleanly offline. Display type (the hero, the
+auth headline, panel titles) is heavy and tightly tracked; body type is quiet.
+A monospace stack carries keys and URLs, `tabular-nums` keeps figures aligned,
+and `text-wrap: balance` is applied to the hero and auth headline.
 
 ---
 
@@ -127,6 +155,73 @@ If you skip confirmation and try to log in, the app shows
 
 ---
 
+## Key expiry
+
+A key can be given a lifetime in the editor: **No expiry**, `1 hour`, `24 hours`,
+`7 / 30 / 90 / 180 / 365 days`, or a **custom** date and time.
+
+Expiry is enforced **in the database**, not in the browser. When the proxy
+resolves a token to its key, [`service_get_key()`](supabase-schema.sql:1) returns
+`expired: true` and **withholds the plaintext entirely**:
+
+```sql
+v_expired := v_row.expires_at is not null and v_row.expires_at <= now();
+-- 'secret', case when v_expired then null
+--           else private.decrypt_api_key(v_row.key_ciphertext) end
+```
+
+That has three consequences worth stating plainly:
+
+- An expired key **cannot be used**, even by a caller holding a valid proxy token.
+  The refusal is not a client-side check that could be bypassed.
+- The key is **not deleted**. The record, its metadata and its history all remain,
+  so an expiry is reversible — extend it and the key works again.
+- An expired key is **not silently dropped** either. It stays visible in the list,
+  tagged `Expired`, and appears in a **Keys needing attention** panel on Overview
+  with a one-click **Extend** action.
+
+The Overview also counts **Expiring soon**, defined as within
+[`EXPIRY_WARNING_DAYS`](config.js:1) (7 by default) so nothing lapses unnoticed.
+
+## Key groups
+
+Groups are named, colour-coded buckets — by project, team or environment.
+
+- Create, rename, recolour and delete them in **Account → Groups**.
+- Assign a key to a group in the key editor, or select several keys and use
+  **Assign group** in the bulk bar.
+- Filter the keys view by group; an **Ungrouped** filter appears whenever any
+  key has no group.
+- The search box matches group names too. Sort offers **Group A–Z**.
+
+Groups are designed to be safe to delete: the foreign key is
+`ON DELETE SET NULL`, so removing a group never removes a key — the key simply
+becomes ungrouped, and the confirmation dialog says so.
+
+Colours are stored as one of eight names, constrained by a database `CHECK`
+(`slate`, `indigo`, `rose`, `amber`, `emerald`, `sky`, `violet`, `teal`), and
+mapped to OKLCH hues in [`group-palette.js`](group-palette.js:1). Because the
+mapping uses `light-dark()`, one stored name resolves to a coherent colour in
+both themes.
+
+## Bulk actions and export
+
+Tick keys in the list (or on a card) to open the bulk bar. From there you can:
+
+| Action | Effect |
+|---|---|
+| **Assign group** | Move every selected key into a group |
+| **Set expiry** | Apply a preset lifetime to all of them |
+| **Validate** | Run the provider check sequentially, so no provider is stampeded |
+| **Export** | Download the selected keys as JSON |
+| **Delete** | Remove them, behind a confirmation that states the count |
+
+**Export is metadata only.** The JSON carries label, provider, description, base
+URL, group name, `key_last4`, fingerprint, expiry and validation history — and
+states `"secrets_included": false` explicitly. It is not a backup of the
+credentials, and cannot be turned into one: the frontend never has them all at
+once.
+
 ## Security architecture
 
 This is the part that matters. Four layers cooperate.
@@ -164,21 +259,32 @@ plaintext values or touch another user's rows even with a valid token.
 
 | Function | Purpose |
 |---|---|
-| `create_api_key(provider, api_key, label, description, api_base_url)` | Validate → encrypt → insert |
-| `update_api_key(id, provider, label, description, api_base_url, api_key)` | Re-encrypt only when a new key is supplied |
+| `create_api_key(provider, api_key, label, description, api_base_url, expires_at, group_id)` | Validate → encrypt → insert |
+| `update_api_key(id, provider, label, description, api_base_url, api_key, expires_at, group_id)` | Re-encrypt only when a new key is supplied |
 | `get_api_key_secret(id)` | Decrypt one owned key, on demand |
 | `delete_api_key(id)` | Delete one owned key |
+| `set_api_key_expiry(id, expires_at)` | Set or clear a key's lifetime |
+| `set_api_key_group(id, group_id)` | Move a key into a group, or out of one |
+| `create_key_group(name, color)` / `update_key_group(id, name, color)` | Create or rename/recolour a group |
+| `delete_key_group(id)` | Delete a group; its keys become ungrouped |
 
 Every one of them:
 
 - starts with `(select auth.uid())` and raises `42501` when unauthenticated;
 - re-verifies ownership by matching `user_id = auth.uid()` in the statement
-  itself (not by trusting an argument);
+  itself (not by trusting an argument) — including `p_group_id`, which is
+  honoured **only** when the group belongs to the caller;
 - is `SECURITY DEFINER` **with `SET search_path = ''`** (schema-hijack safe);
 - is `EXECUTE`-granted **only to `authenticated`** — `anon` and `public` are
   revoked;
 - returns only `jsonb` of audit-safe columns, so **ciphertext is not even
   serialisable to the client**.
+
+`key_groups` follows the same shape as `api_keys`: RLS on, a **SELECT-only**
+policy scoped to `auth.uid()`, and no INSERT/UPDATE/DELETE policy at all.
+Verified after the migration: the new group and expiry functions are granted to
+`authenticated` and **not** to `anon`, and `service_get_key` — which now
+enforces expiry — gained no client grant.
 
 ### 4. Frontend hygiene
 
@@ -356,6 +462,14 @@ transactions, so no test data remains):
 | User B calls `get_api_key_secret` on A's key | blocked — `API key not found` |
 | Anonymous (logged out) SELECT | blocked — `permission denied for table api_keys` |
 | Anonymous RPC call | blocked — `permission denied for function create_api_key` |
+| Duplicate group name in one account | blocked by `key_groups_user_name_key` |
+| Expired key resolved by the proxy | `expired: true`, and **`secret` withheld** (`null`) |
+| Key with no expiry, same path | `secret` returned as normal |
+| Group / expiry RPC grants | `authenticated` only — `anon` revoked |
+| `service_get_key` grants | unchanged — no client role |
+
+The expiry and group checks were run inside a rolled-back transaction, so no
+test rows remain.
 
 Connectivity-check tests against the deployed function:
 
@@ -388,18 +502,30 @@ Live schema reference: [`supabase-schema.sql`](supabase-schema.sql:1).
 ```
 auth.users
    │ 1:N (on delete cascade)
-   ▼
+   ├───────────────────────────────┐
+   ▼                               ▼
 public.api_keys ── id, user_id, provider, label, description,
                    api_base_url, key_ciphertext (bytea, AES-256),
                    key_last4, key_fingerprint (sha256),
+                   expires_at (NULL = never expires),
+                   group_id (NULL = ungrouped), created_at, updated_at,
                    last_check_at, last_check_ok, last_check_status,
-                   last_check_message, created_at, updated_at
+                   last_check_message
+                        │
+                        │ N:1  ON DELETE SET NULL
+                        ▼
+            public.key_groups ── id, user_id, name, color,
+                                 created_at, updated_at
+                                 unique (user_id, lower(btrim(name)))
 
 private.app_secrets ── id, secret (never exposed via the API)
 ```
 
 `key_fingerprint` is a SHA-256 of the plaintext, useful for detecting duplicate
 keys without decrypting anything. `key_last4` powers the masked display.
+
+Deleting a group **never** deletes a key: `group_id` is `ON DELETE SET NULL`, so
+the key survives as ungrouped.
 
 ---
 
@@ -408,8 +534,9 @@ keys without decrypting anything. `key_last4` powers the masked display.
 ```
 ├── index.html            # Markup: auth screen, app screen, dialogs
 ├── styles.css            # Mobile-first styles, light + dark, responsive
-├── app.js                # Auth, CRUD, search, reveal/copy, Test, Realtime
-├── config.js             # Public Supabase URL + publishable key, providers
+├── app.js                # Auth, CRUD, groups, expiry, bulk, search, Realtime
+├── config.js             # Public Supabase URL + publishable key, presets
+├── group-palette.js      # Group colour names → OKLCH hues (shared mapping)
 ├── supabase-schema.sql   # Documented snapshot of the deployed database
 ├── smoke-test.ps1        # End-to-end auth + CRUD test
 ├── test-function.ps1     # End-to-end test of the connectivity-check function
@@ -431,16 +558,19 @@ keys without decrypting anything. `key_last4` powers the masked display.
 
 1. **Sign up** with an email and a password (6+ characters).
 2. Confirm your email if confirmation is enabled, then **log in**.
-3. Tap **Add key**, choose a provider, paste the key, optionally add a label,
-   description, and base URL.
+3. Tap **Add key**, choose a provider, paste the key, and optionally add a
+   label, description, base URL, **group** and **expiry**.
 4. The key is encrypted server-side and appears masked as
    `••••••••••••••••XXXX`.
 5. **Reveal** decrypts it for 30 seconds. **Copy** copies it to the clipboard
    without displaying it. **Validate** checks it against the provider. **Edit**
-   changes metadata and optionally rotates the key. **Delete** removes it
-   permanently. The validation control and status pill show the last verdict.
-6. Open the app on another device with the same account — keys appear there,
-   and edits propagate live via Realtime.
+   changes metadata — including group and expiry — and optionally rotates the
+   key. **Delete** removes it permanently. The validation control and status
+   pill show the last verdict.
+6. Tick several keys to open the **bulk bar**, then assign a group, set an
+   expiry, validate them all, export, or delete in one pass.
+7. Open the app on another device with the same account — keys **and groups**
+   appear there, and edits propagate live via Realtime.
 
 ---
 
@@ -502,15 +632,17 @@ CLEANUP remaining_keys=0
 | Test says “not an allowed target” | The base URL is not https, or points at a private/loopback address. |
 | Test says “provider server error — the key could not be verified” | The provider is down or returned 5xx; try again later. |
 | Test fails but the app works fine | The probe path (`/models`) may not exist on that provider. Adjust [`TEST_PROBE_PATH`](config.js:31). |
+| A key stopped working through the proxy | It has probably expired. Check the **Expired** count on Overview and extend it. |
+| “A group with that name already exists” | Group names are unique per account, compared case-insensitively. Pick another name. |
 
 ---
 
 ## Deploying
 
-Deploy the four static files (`index.html`, `styles.css`, `app.js`, `config.js`)
-to any static host — Netlify, Vercel, Cloudflare Pages, GitHub Pages, S3. No
-environment variables and no build command are required. Remember to enable
-**Confirm email** in Supabase for production.
+Deploy the five static files (`index.html`, `styles.css`, `app.js`, `config.js`,
+`group-palette.js`) to any static host — Netlify, Vercel, Cloudflare Pages,
+GitHub Pages, S3. No environment variables and no build command are required.
+Remember to enable **Confirm email** in Supabase for production.
 
 The [`test-api-key`](supabase/functions/test-api-key/index.ts:1) Edge Function is
 already deployed. To redeploy after editing it:

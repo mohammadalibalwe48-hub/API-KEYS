@@ -61,6 +61,10 @@ revoke all on function private.decrypt_api_key(bytea) from public, anon, authent
 
 -- ---------------------------------------------------------------------
 -- 2. Keys table — ciphertext only, never plaintext
+--
+--    NOTE ON BUILD ORDER: this table references public.key_groups, which
+--    is defined in section 7. Rebuilding from scratch, create the groups
+--    table first.
 -- ---------------------------------------------------------------------
 create table if not exists public.api_keys (
   id                uuid primary key default extensions.gen_random_uuid(),
@@ -72,6 +76,12 @@ create table if not exists public.api_keys (
   key_ciphertext    bytea not null,
   key_last4         text not null default '',
   key_fingerprint   text not null,
+  -- Optional lifetime. NULL = never expires. Once past, the proxy refuses
+  -- to decrypt the key (see service_get_key), so it cannot be forwarded.
+  expires_at        timestamptz,
+  -- Optional bucket. ON DELETE SET NULL, so deleting a group never deletes
+  -- a key — the key simply becomes ungrouped.
+  group_id          uuid references public.key_groups(id) on delete set null,
   -- Outcome of the most recent live provider probe (NULL = never tested).
   last_check_at      timestamptz,
   last_check_ok      boolean,
@@ -85,6 +95,17 @@ create table if not exists public.api_keys (
 
 create index if not exists api_keys_user_id_idx
   on public.api_keys (user_id, created_at desc);
+
+create index if not exists api_keys_group_idx
+  on public.api_keys (user_id, group_id);
+
+-- The foreign key needs its own index: ON DELETE SET NULL looks the key up by
+-- group_id alone, which the composite index above cannot serve.
+create index if not exists api_keys_group_id_fkey_idx
+  on public.api_keys (group_id);
+
+create index if not exists api_keys_expires_idx
+  on public.api_keys (user_id, expires_at);
 
 alter table public.api_keys enable row level security;
 
@@ -119,15 +140,23 @@ create trigger api_keys_touch_updated_at
 --    CREATE / UPDATE return audit-safe jsonb (no ciphertext field).
 --    REVEAL decrypts a single owned row.
 -- ---------------------------------------------------------------------
--- create_api_key(p_provider, p_api_key, p_label, p_description, p_api_base_url) -> jsonb
--- update_api_key(p_id, p_provider, p_label, p_description, p_api_base_url, p_api_key) -> jsonb
+-- create_api_key(p_provider, p_api_key, p_label, p_description,
+--                p_api_base_url, p_expires_at, p_group_id)    -> jsonb
+-- update_api_key(p_id, p_provider, p_label, p_description,
+--                p_api_base_url, p_api_key, p_expires_at, p_group_id) -> jsonb
 -- get_api_key_secret(p_id) -> text
 -- delete_api_key(p_id) -> void
 -- record_api_key_check(p_id, p_ok, p_status, p_message) -> void
+-- set_api_key_expiry(p_id, p_expires_at) -> timestamptz
+-- set_api_key_group(p_id, p_group_id) -> void
+-- create_key_group(p_name, p_color) -> jsonb
+-- update_key_group(p_id, p_name, p_color) -> jsonb
+-- delete_key_group(p_id) -> void
 --
 -- Each begins with:  v_uid uuid := (select auth.uid());
 -- and raises 42501 when unauthenticated. Ownership is re-verified by
--- matching user_id = auth.uid() inside the statement itself.
+-- matching user_id = auth.uid() inside the statement itself. A p_group_id
+-- is honoured only when it belongs to the caller.
 -- Every function is: SECURITY DEFINER + SET search_path = '' + EXECUTE
 -- granted only to the `authenticated` role.
 
@@ -176,7 +205,66 @@ alter publication supabase_realtime add table public.api_keys;
 -- cannot select proxy_tokens.token_hash.
 
 -- ---------------------------------------------------------------------
--- 6. Operational notes
+-- 6. Key groups — named, colour-coded buckets
+-- ---------------------------------------------------------------------
+-- A group is private to its owner. Like api_keys it exposes a
+-- SELECT-only policy and has no INSERT/UPDATE/DELETE policy, so the
+-- group RPCs in section 3 are the only mutation path.
+--
+-- The unique index on (user_id, lower(btrim(name))) is what stops
+-- duplicate names within one account while leaving different accounts
+-- free to use the same name.
+create table if not exists public.key_groups (
+  id         uuid primary key default extensions.gen_random_uuid(),
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  name       text not null,
+  color      text not null default 'slate',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint key_groups_name_len check (char_length(btrim(name)) between 1 and 60),
+  -- Must match GROUP_COLORS in config.js.
+  constraint key_groups_color_check
+    check (color in ('slate','indigo','rose','amber','emerald','sky','violet','teal'))
+);
+
+create unique index if not exists key_groups_user_name_key
+  on public.key_groups (user_id, lower(btrim(name)));
+
+create index if not exists key_groups_user_idx
+  on public.key_groups (user_id, created_at desc);
+
+alter table public.key_groups enable row level security;
+
+create policy "key_groups_select_own"
+  on public.key_groups for select to authenticated
+  using ( (select auth.uid()) = user_id );
+
+grant select on table public.key_groups to authenticated;
+
+create trigger key_groups_touch_updated_at
+  before update on public.key_groups
+  for each row execute function public.touch_updated_at();
+
+alter table public.key_groups replica identity full;
+alter publication supabase_realtime add table public.key_groups;
+
+-- ---------------------------------------------------------------------
+-- 7. Expiry enforcement
+-- ---------------------------------------------------------------------
+-- An expired key is not deleted, and it is not readable either. Whenever
+-- the proxy resolves a token to its key, service_get_key returns
+-- 'expired': true and withholds the plaintext entirely:
+--
+--   v_expired := v_row.expires_at is not null and v_row.expires_at <= now();
+--   ... 'secret', case when v_expired then null
+--                     else private.decrypt_api_key(v_row.key_ciphertext) end
+--
+-- So the enforcement lives in the database, not in the client: a caller
+-- holding a valid proxy token still cannot get an expired key used. The
+-- record stays visible in the UI, where it can be extended and used again.
+
+-- ---------------------------------------------------------------------
+-- 8. Operational notes
 -- ---------------------------------------------------------------------
 -- * auth.users is managed by Supabase Auth; sign-up requires a unique
 --   email and a password of at least 6 characters.

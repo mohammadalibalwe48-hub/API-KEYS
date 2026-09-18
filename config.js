@@ -69,3 +69,40 @@ export const PROXY_FUNCTION_NAME = 'ai-proxy';
 
 /** How many recent requests to list in the Usage view. */
 export const USAGE_PAGE_SIZE = 25;
+
+/**
+ * Expiry presets offered when setting how long a key stays valid.
+ *
+ * A key with an expiry is treated as expired from that moment on: the proxy
+ * refuses to hand out its secret, so an expired key can never be forwarded
+ * to a provider even though the ciphertext remains in the vault.
+ *
+ * `days: null` means "no expiry". `days: undefined` is the custom-date
+ * escape hatch, which reveals a date-time field.
+ */
+export const EXPIRY_PRESETS = [
+    { value: 'never', label: 'No expiry', days: null },
+    { value: '1h', label: '1 hour', hours: 1 },
+    { value: '24h', label: '24 hours', hours: 24 },
+    { value: '7d', label: '7 days', days: 7 },
+    { value: '30d', label: '30 days', days: 30 },
+    { value: '90d', label: '90 days', days: 90 },
+    { value: '180d', label: '180 days', days: 180 },
+    { value: '365d', label: '1 year', days: 365 },
+    { value: 'custom', label: 'Custom date…', days: undefined },
+];
+
+/** How many days ahead a key counts as "expiring soon". */
+export const EXPIRY_WARNING_DAYS = 7;
+
+/**
+ * Colours a group can carry. The value is stored as text in key_groups.color
+ * and matched by the database to this same set; the interface maps it to a
+ * CSS `--group-hue` custom property.
+ */
+export const GROUP_COLORS = [
+    'slate', 'indigo', 'rose', 'amber', 'emerald', 'sky', 'violet', 'teal',
+];
+
+/** Export filename prefix for the metadata export. */
+export const EXPORT_FILENAME_PREFIX = 'keyvault-keys';
